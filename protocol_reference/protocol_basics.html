@@ -1,0 +1,85 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+<meta name="GENERATOR" content="Microsoft FrontPage 4.0">
+<meta name="ProgId" content="FrontPage.Editor.Document">
+<title>Protocol Basics</title>
+</head>
+
+<body>
+
+<h2>Protocol Basics</h2>
+<ul>
+  <li><strong>Serial link</strong><br>
+    The serial link is established at 9600 baud, 8 bit, no parity, 2 stop. The
+    serial cable needs to be a null-modem type cable (tx/rx swapped).
+  <li><strong>Flow control</strong><br>
+    Flow control is done via a form of software flow control. Unfortunately,
+    this flow control is not XON/XOFF, but instead what appears to be a form of
+    the old HP serial terminal ENQ-ACK flow control.<br>
+    The mechanics of the flow control used by the Kenwood cd player is of the
+    form:
+    <ul>
+      <li>When an <a href="glossary.html#Event" target="bottom">event</a>
+        or <a href="glossary.html#Request" target="bottom">request</a>
+        needs to be communicated, the initiator of the event/request send the
+        ascii ENQ (0x05) byte
+      <li>Upon receipt of an ENQ, the reciever acknowledges that it is ready to
+        process the event/request with the ascii ACK (0x06) byte
+      <li>Upon receipt of the ACK, the initiator may begin transmitting the
+        event/request.
+      <li>Upon termination of the event/request, an ascii EOT (0x04) byte is
+        sent. The receipt of this final is acknowledged with an ascii ACK (0x06)
+        byte.</li>
+    </ul>
+  <li><strong>Event/Request Framing</strong><br>
+    The start of an event or request is signaled with the ascii STX (0x02) byte.
+    A command byte is sent along with a <a href="glossary.html#Payload" target="bottom">payload</a>
+    of the event/request. The receiver of the command signals successful receipt
+    with an ascii ACK (0x06) byte. Unsuccessful receipt is signaled with the
+    ascii NAK (0x15) byte.
+  <li><strong>Payload</strong><br>
+    The payload format is of the form:
+    <table cellSpacing="0" cellPadding="2" border="1">
+      <tbody>
+        <tr>
+          <td vAlign="top" align="middle">
+            <p align="center">2 bytes</p>
+          </td>
+          <td vAlign="top" align="middle">
+            <p align="center">n bytes</p>
+          </td>
+          <td vAlign="top" align="middle">
+            <p align="center">1 byte</p>
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <p align="center">data length (n) (in LSB order)</p>
+          </td>
+          <td>
+            <p align="center">data</p>
+          </td>
+          <td>
+            <p align="center">checksum</p>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  <li><strong>Checksum<br>
+    </strong>A <a href="glossary.html#Checksum" target="bottom"> checksum</a> is computed for each payload. This is used to
+    (potentially) detect transmission errors. There does not seem to be any
+    error recovery associated with this checksum. The checksum is computed by:
+    summing the bytes of the command, data length, and data; subtracting 1; and
+    inverting the bits of resulting sum.
+  <li><strong>Reply Framing<br>
+    </strong>Requests may have <a href="glossary.html#Reply" target="bottom">reply</a>
+    data associated with them. The format of reply data is virtually identical
+    to that of an event/request frame. The ascii STX (0x02) byte is sent
+    followed by a payload.</li>
+</ul>
+
+</body>
+
+</html>

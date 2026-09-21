@@ -1,0 +1,80 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type"
+content="text/html; charset=iso-8859-1">
+<meta name="GENERATOR" content="Microsoft FrontPage 4.0">
+<title>InfoEvent</title>
+</head>
+
+<body bgcolor="#FFFFFF">
+
+<h3>InfoEvent</h3>
+
+<blockquote>
+    <p>Current changer info.</p>
+</blockquote>
+
+<h3>Payload</h3>
+
+<blockquote>
+    <table border="1">
+        <tr>
+            <td height="19"><strong>Data Type</strong></td>
+            <td height="19"><strong>Parameter Name</strong></td>
+            <td height="19"><strong>Description</strong></td>
+        </tr>
+        <tr>
+            <td height="19">short</td>
+            <td height="19">slot</td>
+            <td height="19">slot number</td>
+        </tr>
+        <tr>
+            <td height="19">byte</td>
+            <td height="19">track</td>
+            <td height="19">track number</td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>program</td>
+            <td>program number</td>
+        </tr>
+        <tr>
+            <td height="19">byte</td>
+            <td height="19">num_tracks</td>
+            <td height="19">track count</td>
+        </tr>
+        <tr>
+            <td height="19">byte</td>
+            <td height="19">userfiles</td>
+            <td height="19">bit or'd combination of <a href="cd_types.html#Userfile"> userfiles</a></td>
+        </tr>
+        <tr>
+            <td height="19">byte</td>
+            <td height="19">param</td>
+            <td height="19"><a href="cd_types.html#Userfile">userfile</a> or <a href="cd_types.html#Genre">genre</a></td>
+        </tr>
+        <tr>
+            <td height="19">byte</td>
+            <td height="19">mode</td>
+            <td height="19"><a href="cd_types.html#Mode">mode</a></td>
+        </tr>
+        <tr>
+            <td height="19">bool</td>
+            <td height="19">repeat</td>
+            <td height="19">repeat on</td>
+        </tr>
+    </table>
+</blockquote>
+
+<h3>Notes</h3>
+
+<blockquote>
+    <p>param is a userfile when mode = 0x07, 0x08, or 0x09 </p>
+    <p>param is a genre when mode = 0x05, or 0x06 </p>
+    <p>program is only set in program mode </p>
+  <p>&nbsp;</p>
+</blockquote>
+<p>&nbsp;</p>
+</body>
+</html>

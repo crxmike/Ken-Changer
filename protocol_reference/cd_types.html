@@ -1,0 +1,507 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type"
+content="text/html; charset=iso-8859-1">
+<meta name="GENERATOR" content="Microsoft FrontPage 4.0">
+<title>DataAccess</title>
+</head>
+
+<body bgcolor="#FFFFFF">
+
+<h3>Types</h3>
+
+<blockquote>
+    <p><a name="toc_time">toc_time</a> type: </p>
+    <table border="1">
+        <tr>
+            <td><strong>Data Type</strong></td>
+            <td><strong>Parameter Name</strong></td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>minutes</td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>seconds</td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>frames (always 0x00)</td>
+        </tr>
+    </table>
+  <hr>
+    <p><a name="slot_track">slot_track</a> type: </p>
+    <table border="1">
+        <tr>
+            <td><strong>Data Type</strong></td>
+            <td><strong>Parameter Name</strong></td>
+        </tr>
+        <tr>
+            <td>short</td>
+            <td>slot number</td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>track number</td>
+        </tr>
+    </table>
+    <hr>
+    <p>&nbsp;</p>
+</blockquote>
+
+<h3>Enumerations</h3>
+
+<blockquote>
+    <p><a name="Action">Action</a> values: </p>
+    <table border="1">
+        <tr>
+            <td>action</td>
+            <td>meaning</td>
+        </tr>
+        <tr>
+            <td>0x00</td>
+            <td>retrieve data</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>set disc genre</td>
+        </tr>
+        <tr>
+            <td>0x20</td>
+            <td>write program</td>
+        </tr>
+        <tr>
+            <td>0x40</td>
+            <td>set userfiles</td>
+        </tr>
+        <tr>
+            <td>0x80</td>
+            <td>write name</td>
+        </tr>
+    </table>
+</blockquote>
+
+<blockquote>
+    <hr>
+    <p><a name="Data Type">Data Type</a> values:</p>
+    <table border="1">
+        <tr>
+            <td>data_type</td>
+            <td>meaning</td>
+        </tr>
+        <tr>
+            <td>0x00</td>
+            <td>ReadyForData</td>
+        </tr>
+        <tr>
+            <td>0x01</td>
+            <td>TextData/LongTextData</td>
+        </tr>
+        <tr>
+            <td>0x02</td>
+            <td>DiscInfo</td>
+        </tr>
+        <tr>
+            <td>0x04</td>
+            <td>DiscTOC</td>
+        </tr>
+        <tr>
+            <td>0x08</td>
+            <td>DiscUserfiles</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>DiscGenre</td>
+        </tr>
+        <tr>
+            <td>0x20</td>
+            <td>DiscListing</td>
+        </tr>
+    </table>
+</blockquote>
+
+<blockquote>
+    <hr>
+</blockquote>
+
+<blockquote>
+    <p><a name="Expected Data Type">Expected Data Type</a> values:</p>
+    <table border="1">
+        <tr>
+            <td>data_type</td>
+            <td>meaning</td>
+        </tr>
+        <tr>
+            <td>0x00</td>
+            <td>ReadyForData</td>
+        </tr>
+        <tr>
+            <td>0x01</td>
+            <td>TextData/LongTextData</td>
+        </tr>
+        <tr>
+            <td>0x02</td>
+            <td>DiscInfo</td>
+        </tr>
+        <tr>
+            <td>0x04</td>
+            <td>DiscTOC</td>
+        </tr>
+        <tr>
+            <td>0x08</td>
+            <td>DiscUserfiles</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>DiscGenre</td>
+        </tr>
+        <tr>
+            <td>0x20</td>
+            <td>DiscListing</td>
+        </tr>
+    </table>
+</blockquote>
+
+<blockquote>
+    <hr>
+</blockquote>
+
+<blockquote>
+    <p><a name="Info Type">Info Type</a> values:</p>
+    <table border="1">
+        <tr>
+            <td>info_type</td>
+            <td>data_type=0x01</td>
+        </tr>
+        <tr>
+            <td>0x00</td>
+            <td>disc names</td>
+        </tr>
+        <tr>
+            <td>0x01</td>
+            <td>track names</td>
+        </tr>
+        <tr>
+            <td>0x02</td>
+            <td>artist name</td>
+        </tr>
+        <tr>
+            <td>0x07</td>
+            <td>userfile names</td>
+        </tr>
+    </table>
+    <hr>
+    <p><a name="Genre">Genre</a> values: </p>
+    <table border="1">
+        <tr>
+            <td height="19">genre</td>
+            <td height="19">meaning</td>
+        </tr>
+        <tr>
+            <td height="19">0x00</td>
+            <td height="19">Unassigned</td>
+        </tr>
+        <tr>
+            <td height="19">0x01</td>
+            <td height="19">Unknown</td>
+        </tr>
+        <tr>
+            <td height="19">0x02</td>
+            <td height="19">Adult Contemporary</td>
+        </tr>
+        <tr>
+            <td height="19">0x03</td>
+            <td height="19">Alternative Rock</td>
+        </tr>
+        <tr>
+            <td height="19">0x04</td>
+            <td height="19">Childrens</td>
+        </tr>
+        <tr>
+            <td height="19">0x05</td>
+            <td height="19">Classical</td>
+        </tr>
+        <tr>
+            <td height="19">0x06</td>
+            <td height="19">Christian</td>
+        </tr>
+        <tr>
+            <td height="19">0x07</td>
+            <td height="19">Country</td>
+        </tr>
+        <tr>
+            <td height="19">0x08</td>
+            <td height="19">Dance</td>
+        </tr>
+        <tr>
+            <td height="19">0x09</td>
+            <td height="19">Easy Listening</td>
+        </tr>
+        <tr>
+            <td height="19">0x0A</td>
+            <td height="19">Erotic</td>
+        </tr>
+        <tr>
+            <td height="19">0x0B</td>
+            <td height="19">Folk</td>
+        </tr>
+        <tr>
+            <td height="19">0x0C</td>
+            <td height="19">Gospel</td>
+        </tr>
+        <tr>
+            <td height="19">0x0D</td>
+            <td height="19">Hip Hop</td>
+        </tr>
+        <tr>
+            <td height="19">0x0E</td>
+            <td height="19">Jazz</td>
+        </tr>
+        <tr>
+            <td height="19">0x0F</td>
+            <td height="19">Latin</td>
+        </tr>
+        <tr>
+            <td height="19">0x10</td>
+            <td height="19">Musical</td>
+        </tr>
+        <tr>
+            <td height="19">0x11</td>
+            <td height="19">New Age</td>
+        </tr>
+        <tr>
+            <td height="19">0x12</td>
+            <td height="19">Opera</td>
+        </tr>
+        <tr>
+            <td height="19">0x13</td>
+            <td height="19">Operetta</td>
+        </tr>
+        <tr>
+            <td height="19">0x14</td>
+            <td height="19">Pop</td>
+        </tr>
+        <tr>
+            <td height="19">0x15</td>
+            <td height="19">Rap</td>
+        </tr>
+        <tr>
+            <td height="16">0x16</td>
+            <td height="16">Reggae</td>
+        </tr>
+        <tr>
+            <td height="19">0x17</td>
+            <td height="19">Rock</td>
+        </tr>
+        <tr>
+            <td height="19">0x18</td>
+            <td height="19">Rhythm &amp; Blues</td>
+        </tr>
+        <tr>
+            <td height="16">0x19</td>
+            <td height="16">Sound Effects</td>
+        </tr>
+        <tr>
+            <td height="19">0x1A</td>
+            <td height="19">Soundtrack</td>
+        </tr>
+        <tr>
+            <td height="19">0x1B</td>
+            <td height="19">Spoken Word</td>
+        </tr>
+        <tr>
+            <td height="19">0x1C</td>
+            <td height="19">World Music</td>
+        </tr>
+    </table>
+    <hr>
+    <p><a name="Format">Format</a> values: </p>
+    <table border="1">
+        <tr>
+            <td>format</td>
+            <td>meaning</td>
+        </tr>
+        <tr>
+            <td>0x00</td>
+            <td>no cd-text</td>
+        </tr>
+        <tr>
+            <td>0x13</td>
+            <td>has cd-text info</td>
+        </tr>
+    </table>
+    <hr>
+    <p><a name="Userfile">Userfile</a> values: </p>
+    <table border="1">
+        <tr>
+            <td>userfile bit</td>
+            <td>meaning</td>
+        </tr>
+        <tr>
+            <td>0x01</td>
+            <td>userfile #1</td>
+        </tr>
+        <tr>
+            <td>0x02</td>
+            <td>userfile #2</td>
+        </tr>
+        <tr>
+            <td>0x04</td>
+            <td>userfile #3</td>
+        </tr>
+        <tr>
+            <td>0x08</td>
+            <td>userfile #4</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>userfile #5</td>
+        </tr>
+        <tr>
+            <td>0x20</td>
+            <td>userfile #6</td>
+        </tr>
+        <tr>
+            <td>0x40</td>
+            <td>userfile #7</td>
+        </tr>
+        <tr>
+            <td>0x80</td>
+            <td>userfile #8</td>
+        </tr>
+    </table>
+    <hr>
+    <p><a name="Mode">Mode</a>  values:</p>
+    <table border="1">
+        <tr>
+            <td>mode</td>
+            <td>meaning</td>
+        </tr>
+        <tr>
+            <td>0x00</td>
+            <td>Track Mode</td>
+        </tr>
+        <tr>
+            <td>0x01</td>
+            <td>Track Mode (Random One)</td>
+        </tr>
+        <tr>
+            <td>0x02</td>
+            <td>Track Mode (Random All)</td>
+        </tr>
+        <tr>
+            <td>0x03</td>
+            <td>Program Mode</td>
+        </tr>
+        <tr>
+            <td>0x04</td>
+            <td>Best Mode</td>
+        </tr>
+        <tr>
+            <td>0x05</td>
+            <td>Music Type Mode</td>
+        </tr>
+        <tr>
+            <td>0x06</td>
+            <td>Music Type Mode (Random All)</td>
+        </tr>
+        <tr>
+            <td>0x07</td>
+            <td>Userfile Mode</td>
+        </tr>
+        <tr>
+            <td>0x08</td>
+            <td>Userfile Mode (Random One)</td>
+        </tr>
+        <tr>
+            <td>0x09</td>
+            <td>Userfile Mode (Random All)</td>
+        </tr>
+    </table>
+    <hr>
+    <p><a name="State">State</a> values:</p>
+    <table border="1">
+        <tr>
+            <td>state</td>
+            <td>meaning</td>
+        </tr>
+        <tr>
+            <td>0x40</td>
+            <td>Stopped</td>
+        </tr>
+        <tr>
+            <td>0x50</td>
+            <td>Stopping</td>
+        </tr>
+        <tr>
+            <td>0x60</td>
+            <td>Changing</td>
+        </tr>
+        <tr>
+            <td>0x70</td>
+            <td>Playing</td>
+        </tr>
+        <tr>
+            <td>0x80</td>
+            <td>Paused</td>
+        </tr>
+        <tr>
+            <td>0x90</td>
+            <td>Fast Forwarding</td>
+        </tr>
+        <tr>
+            <td>0xA0</td>
+            <td>Fast Backwarding</td>
+        </tr>
+    </table>
+    <hr>
+    <p><a name="Action Command">Action Command</a> values:</p>
+    <table border="1" height="269">
+        <tr>
+            <td height="19">mode</td>
+            <td height="19">meaning</td>
+        </tr>
+        <tr>
+            <td height="13">0x06A0</td>
+            <td height="13">Fast Bacward (repeatable)</td>
+        </tr>
+        <tr>
+            <td height="19">0x07A0</td>
+            <td height="19">Fast Forward (repeatable)</td>
+        </tr>
+        <tr>
+            <td height="19">0xCCA0</td>
+            <td height="19">Repeat Mode</td>
+        </tr>
+        <tr>
+            <td height="19">0xC9A0</td>
+            <td height="19">Stop</td>
+        </tr>
+        <tr>
+            <td height="19">0xCBA0</td>
+            <td height="19">Play/Pause</td>
+        </tr>
+        <tr>
+            <td height="19">0xCEA0</td>
+            <td height="19">Previous Track</td>
+        </tr>
+        <tr>
+            <td height="19">0xCFA0</td>
+            <td height="19">Next Track</td>
+        </tr>
+        <tr>
+            <td height="19">0xD4A1</td>
+            <td height="19">Random Mode</td>
+        </tr>
+        <tr>
+            <td height="19">0xFFFF</td>
+            <td height="19">Finish Repeatable</td>
+        </tr>
+    </table>
+    <hr>
+</blockquote>
+
+</body>
+</html>

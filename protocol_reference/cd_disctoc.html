@@ -1,0 +1,74 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type"
+content="text/html; charset=iso-8859-1">
+<meta name="GENERATOR" content="Microsoft FrontPage 4.0">
+<title>DiscTOC</title>
+</head>
+
+<body bgcolor="#FFFFFF">
+
+<h3>DiscTOC</h3>
+
+<blockquote>
+    <p>Information about a discs TOC.</p>
+</blockquote>
+
+<h3>Payload</h3>
+
+<blockquote>
+    <table border="1">
+        <tr>
+            <td><strong>Data Type</strong></td>
+            <td><strong>Parameter Name</strong></td>
+            <td><strong>Description</strong></td>
+        </tr>
+        <tr>
+            <td>short</td>
+            <td>slot</td>
+            <td>slot number</td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>page_num</td>
+            <td>data page (47? TOC values per page)</td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>format</td>
+            <td><a href="cd_types.html#Format">format of disc</a></td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>first_track</td>
+            <td>number of first track</td>
+        </tr>
+        <tr>
+            <td>byte</td>
+            <td>last_track</td>
+            <td>number of last track</td>
+        </tr>
+        <tr>
+            <td colspan="3">repeated (last_track-first_track+2)
+            times</td>
+        </tr>
+        <tr>
+            <td><a href="cd_types.html#toc_time">toc_time</a></td>
+            <td>time</td>
+            <td>start time of track n</td>
+        </tr>
+    </table>
+</blockquote>
+
+<blockquote>
+</blockquote>
+
+<h3>Notes</h3>
+
+<blockquote>
+    <p>A maximum of 99 tracks are listed.</p>
+</blockquote>
+
+</body>
+</html>
