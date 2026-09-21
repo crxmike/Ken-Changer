@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5.2 -- Renamed the app to "Ken Changer"
+
+**What changed:** the app's display name changed from "Kenwood PC-Link
+Control App" to "Ken Changer", out of caution around using Kenwood's
+trademarked name as this project's own branding. This is cosmetic only
+-- no protocol, hardware, or gnudb behavior changed.
+
+Updated: the README title (`README.md`) and the Tkinter window titlebar
+(`pclink_app.py`). Left unchanged: the `.gitignore` build artifact
+filename (`kenwood-pclink.zip`) and the project folder name, both
+deferred for now.
+
+**Deliberately NOT changed:** the `"KenwoodPCLinkController"` string
+used in the gnudb.org `hello=` handshake (`pclink_app.py`) and HTTP
+User-Agent (`gnudb_client.py`). That string is gnudb.org's whitelisted
+client identity, unrelated to the app's own branding, and changing it
+risks breaking gnudb access -- see gnudb.org's access policy notes
+elsewhere in this file and in `README.md`.
+
 ## v1.5.1 -- Fixed: writing a track name was silently resetting genre back to Unassigned
 
 **What happened:** shortly after confirming v1.5.0's genre write worked

@@ -105,7 +105,7 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # longer accidentally erase an existing genre. CONFIRMED against real
 # hardware: writing a new genre ("Folk") then a track name in the same
 # session, genre stayed "Folk" throughout -- see CHANGELOG.md.
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -263,7 +263,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title(f"Kenwood PC-Link Control - CD-425M (v{APP_VERSION})")
+        self.title(f"Ken Changer - CD-425M (v{APP_VERSION})")
         self.geometry("950x780")
 
         self.link: PCLinkConnection | None = None

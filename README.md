@@ -1,6 +1,6 @@
-# Kenwood PC-Link Control App (CD-425M)
+# Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.5.1 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.5.2 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre, all confirmed working against
 real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Querying gnudb.org is wired up but
