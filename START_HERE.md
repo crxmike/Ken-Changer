@@ -19,14 +19,48 @@ gnudb.org querying is wired up but its live round-trip is still
 unconfirmed -- see "In progress" below. See `CHANGELOG.md` for the full
 confirmed list.
 
+**v1.5.0/v1.5.1** -- reading/writing disc genre is CONFIRMED against real
+hardware: a "Genre" row in the status panel (auto-fetched + a manual
+"Get Genre" button) and a "Genre" row in the Disc Data tab (Custom
+column is a dropdown of `pclink_protocol.GENRES`, not free text). It
+took four different approaches to get the write working -- three
+standalone-`Action.SET_DISC_GENRE` attempts (v1.4.0-v1.4.2) all failed
+in three different ways (see `CHANGELOG.md`'s v1.4.1/v1.4.2/v1.5.0
+entries for the byte-level detail); what actually works (v1.4.3, proven
+on real hardware in v1.5.0) is folding genre into a `WRITE_NAME` write
+instead, since `cd_textdata.html` shows `TextData`'s payload already has
+its own `genre` field, and that write mechanism was already confirmed
+working for names.
+
+**v1.5.1 fixed (and CONFIRMED the fix for) a real bug found right after
+v1.5.0's confirmation**: genre turns out to be a DISC-LEVEL value that
+the changer sets from the `genre` byte of *every* `TextData` write, not
+just the disc-name one -- so writing a plain track name (leaving the
+Genre dropdown untouched) was silently resetting genre back to
+"Unassigned" every time. Fixed: every name write (disc name and tracks
+alike) now carries whatever genre is currently known for the disc, not
+0. **Retested (slot 4): set genre to "Folk", then wrote an unrelated
+track name with the dropdown left alone -- genre stayed "Folk"
+throughout, no reset.** If the Disc Name Custom field is left blank when
+writing a genre, the app reuses the currently-known name so it isn't
+wiped out; if no name is known at all, it refuses rather than risk
+blanking it.
+
+Reading genre has worked cleanly in every session so far. See
+`CHANGELOG.md`'s v1.4.1-v1.5.1 entries and README.md's "Honest gaps"
+#13/#14 for the full detail.
+
 ## In progress / next up
 
-- **`SET_DISC_GENRE` / `WRITE_PROGRAM` / `SET_USERFILES`** share
-  `send_write()`'s plumbing with the now-confirmed `WRITE_NAME` path but
-  have no UI yet, and their encoders are untested against real hardware
-  beyond round-trip self-consistency (`test_write_feature.py`). Natural
-  next step now that `WRITE_NAME`'s choreography and the UI pattern for
-  it are both proven out.
+- **`WRITE_PROGRAM` / `SET_USERFILES`** share `send_write()`'s plumbing
+  with the now-confirmed `WRITE_NAME` path but have no UI yet, and their
+  encoders are untested against real hardware beyond round-trip
+  self-consistency (`test_write_feature.py`). The now-confirmed genre
+  write (piggybacking on `WRITE_NAME` rather than a standalone action)
+  is a useful precedent if `WRITE_PROGRAM`/`SET_USERFILES` run into
+  similar trouble -- worth checking whether either of those also has a
+  simpler existing mechanism it could ride along with, before assuming
+  the standalone action is the right path.
 - **gnudb.org querying just got wired up** (query -> read -> populate the
   Disc Data tab's "From gnudb.org" column) but hasn't been confirmed
   against a live server response yet -- the user's IP got rate-limited by
@@ -49,6 +83,13 @@ confirmed list.
 - `pclink_link.py` -- serial transport, ENQ/ACK/EOT flow control.
 - `pclink_app.py` -- the Tkinter GUI.
 - `gnudb_client.py` -- gnudb.org HTTP client (stdlib only).
+- `test_write_feature.py` -- tests for the write-to-changer feature
+  (names, confirmed; genre/program/userfiles encoders, round-trip only).
+- `test_genre_feature.py` -- tests for the genre read/write feature;
+  confirmed against real hardware as of v1.5.0 (writes fold into a
+  `WRITE_NAME` write rather than a standalone action), including a
+  v1.5.1 fix (also confirmed) for a bug where writing a track name reset
+  genre -- see `CHANGELOG.md`.
 - `protocol_reference/` -- the original source documentation this whole
   project was built from (`https://juken.sourceforge.net/protocol/`,
   saved copies of the CD-changer-relevant pages; the DVD-changer pages and

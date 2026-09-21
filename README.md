@@ -1,12 +1,20 @@
 # Kenwood PC-Link Control App (CD-425M)
 
-**Status: v1.3.0 -- read/control + TOC/DiscID + Disc Map + writing
-disc/track names, all confirmed working against real CD-425M
-hardware.** See `CHANGELOG.md` for what that covers and the history of
-fixes that got it there. Querying gnudb.org is wired up but its live
-round-trip is unconfirmed. Writing genre/program/userfiles
-(`SET_DISC_GENRE`/`WRITE_PROGRAM`/`SET_USERFILES`) is defined at the
-protocol layer but has no UI yet.
+**Status: v1.5.1 -- read/control + TOC/DiscID + Disc Map + writing
+disc/track names + reading/writing genre, all confirmed working against
+real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
+history of fixes that got it there. Querying gnudb.org is wired up but
+its live round-trip is unconfirmed. Genre writing took four different
+approaches to get right -- it goes out folded into a `WRITE_NAME` write
+rather than the standalone `Action.SET_DISC_GENRE` action the protocol
+docs' own enum suggests, since three real-hardware attempts at that
+failed before this one worked -- **and genre turned out to be a
+disc-level value that EVERY `WRITE_NAME` write sets, so v1.5.1 fixed
+(and CONFIRMED the fix for) a real bug where writing an unrelated track
+name was silently resetting genre back to "Unassigned."** See "Honest
+gaps" #14 and `CHANGELOG.md`'s v1.4.1-v1.5.1 entries for the full history
+if you're extending this. `WRITE_PROGRAM`/`SET_USERFILES` are still
+defined at the protocol layer but have no UI yet.
 
 A small desktop app for controlling a Kenwood CD-425M CD changer (also
 compatible with the CD-4700M / CD-4260M, which use the same command set)
@@ -51,7 +59,10 @@ python pclink_app.py
 - **Status display**, updated live from the changer's spontaneous events:
   playback state (Playing/Paused/Stopped/Changing/...), current disc slot,
   track, program number, play mode, repeat on/off, active userfiles, disc
-  name, track name, and door open/closed.
+  name, track name, genre, and door open/closed. Genre is fetched the same
+  way disc/track names are (auto-fetched on slot change, plus a manual
+  "Get Genre" button) -- **confirmed against real hardware**, see
+  "Honest gaps" #13.
 - **Table of Contents panel** for the currently-loaded disc: per-track start
   time and length, total disc length, and a computed **DiscID** (the
   classic CDDB1/freedb disc identifier, which gnudb.org's query protocol is
@@ -78,7 +89,24 @@ python pclink_app.py
   preserved across disc navigation and data refreshes, so switching discs
   to check something and coming back doesn't lose whatever you were
   typing. "Copy Changer -> Custom" and "Copy gnudb -> Custom" seed
-  column 3 from either source as a starting point.
+  column 3 from either source as a starting point. A fixed **Genre**
+  row sits above the Disc Name/Track rows (genre is disc-level only --
+  there's no per-track genre) -- its Custom column is a dropdown listing
+  every value in the changer's fixed genre enum (`pclink_protocol.GENRES`)
+  plus a blank "don't write a genre" option, rather than free text, since
+  the changer only understands that fixed set. "Write to Changer" sends
+  a non-blank genre selection by folding it into the disc name's
+  `Action.WRITE_NAME` write (`TextData`'s payload has its own `genre`
+  field, per `cd_textdata.html`) -- reusing the currently-known disc name
+  if the Custom Disc Name field is left blank, or refusing the genre
+  write if no disc name is known at all. Every name write (disc name AND
+  tracks) also carries whatever genre is currently known for the disc,
+  not just 0, since genre turned out to be a disc-level value that ANY
+  `TextData` write sets -- writing a track name used to silently reset
+  genre back to "Unassigned" until this was fixed (v1.5.1). **Confirmed
+  against real hardware** -- both the write mechanism itself (four
+  approaches tried) and the v1.5.1 fix (genre survives an unrelated
+  track-name write); see "Honest gaps" #14 for the full history.
 - **Disc Map tab**: a 200-cell grid, one per slot, colored by whether the
   changer reports a disc there or not -- click a cell to query just that
   slot, or "Scan All 200 Slots" to query every slot in sequence (with a
@@ -150,13 +178,16 @@ worth knowing:
 
 ## Not yet implemented
 
-- **Writing genre/program/userfiles to the changer.** `Action.WRITE_NAME`
-  (disc/track names, column 3 of the Disc Data tab) is wired up and
-  confirmed -- see "Disc Data tab" above and `CHANGELOG.md`'s v1.3.0
-  entry. `Action.SET_DISC_GENRE` / `WRITE_PROGRAM` / `SET_USERFILES`
-  share the same `send_write()` plumbing in `pclink_link.py` but have no
-  UI yet, and their encoders are untested against real hardware (only
-  proven self-consistent via round-trip tests in `test_write_feature.py`).
+- **Writing program/userfiles to the changer.** `Action.WRITE_NAME`
+  (disc/track names, column 3 of the Disc Data tab) and genre writing
+  (folded into a `WRITE_NAME` write rather than the standalone
+  `Action.SET_DISC_GENRE` the protocol docs' enum suggests -- see "Disc
+  Data tab" above and "Honest gaps" #14) are both wired up and confirmed
+  -- see `CHANGELOG.md`'s v1.3.0/v1.5.0 entries. `WRITE_PROGRAM` /
+  `SET_USERFILES` share the same `send_write()` plumbing in
+  `pclink_link.py` but still have no UI, and their encoders are untested
+  against real hardware (only proven self-consistent via round-trip
+  tests in `test_write_feature.py`).
 - **A software fallback for "ALL DATA READ."** That command has to be run
   from the changer's own front-panel/remote menu (see the Disc Map tab's
   caveat above) -- there's no serial equivalent. For a user without a
@@ -408,6 +439,92 @@ exactly what's happening):
    meaning, but in the user's two examples it tracked occupancy too (`1`
    for the occupied slot, `0` for the empty one) and might be the more
    reliable field for that specific case if it ever comes up.
+13. **Reading genre -- CONFIRMED against real hardware.** The status
+   panel's "Genre" row and the Disc Data tab's Genre row are
+   auto-fetched/populated the same way disc/track names are
+   (`DataAccess(RETRIEVE_DATA, DiscGenre)`, replying with a single
+   `CMD_DISC_GENRE` frame -- the same "one reply frame per DataAccess
+   request" assumption as gap #3 above, now specifically verified for
+   genre too). Exercised successfully across every one of the sessions
+   in gap #14 below, both before and after writes.
+14. **Writing genre -- CONFIRMED against real hardware, but NOT via the
+   standalone action the protocol docs' own enum suggests, and NOT
+   without hitting (and then fixing and CONFIRMING the fix for) one more
+   real bug along the way (v1.5.1).** Four different approaches were
+   tried, in order, against slot 2 on 2026-09-21, before one worked:
+   - **Attempt 1 (v1.4.0, standalone `Action.SET_DISC_GENRE`,
+     `send_write()`'s two-transaction choreography)**: a real bug -- the
+     initiating `DataAccess(SET_DISC_GENRE)` request's own `genre` field
+     was left at 0 instead of the target value ("Hip Hop"), because the
+     call site never passed it to `encode_data_access()`. Fixed in
+     v1.4.1.
+   - **Attempt 2 (v1.4.1, same approach, bug fixed)**: the request now
+     correctly carried the target genre (`... 10 10 02 00 00 00 0d c7`),
+     and the changer still replied with `ReadyForData` -- but the
+     follow-up `DiscGenre` frame (transaction 2, the same shape
+     CONFIRMED for `WRITE_NAME` in gap #11, just with `CMD_DISC_GENRE`
+     instead of `CMD_TEXT_DATA`) was rejected with an immediate `EOT`
+     instead of `ACK`/`NAK`. Genre didn't change.
+   - **Attempt 3 (v1.4.2, standalone `SET_DISC_GENRE`, NO follow-up
+     frame)**: reasoning that genre already fits inside `DataAccess`'s
+     own payload so a follow-up shouldn't be needed. The request went
+     out correctly, the changer ACK'd it and closed the transaction
+     cleanly -- but genre still didn't change, since `ReadyForData`
+     means "send the payload now" and nothing was sent. Disproved the
+     "no follow-up needed" theory; the two earlier rejections must have
+     been about the follow-up frame's *shape*, not that none was wanted.
+   - **Attempt 4 (v1.4.3, abandoning the standalone action entirely) --
+     WORKED.** Re-reading `cd_types.html` directly ruled out a wrong enum
+     value (`Action.SET_DISC_GENRE`, `DataType.DISC_GENRE`, and all 29
+     genre codes match the docs exactly). `cd_textdata.html` showed
+     `TextData`'s payload -- the one `Action.WRITE_NAME` already writes,
+     already CONFIRMED working -- has its own `genre` field alongside
+     `text`. Folding genre into a disc-name `WRITE_NAME` write
+     (`merge_genre_into_write_items()` in `pclink_app.py`) and sending
+     it through the *already-confirmed* `WRITE_NAME` choreography (no
+     new shape to guess at) worked on the first try: `ReadyForData` came
+     back with `raw_byte: 1` (matching the `WRITE_NAME`-confirmed
+     pattern, unlike the `raw_byte: 8` seen in all three failed
+     `SET_DISC_GENRE` attempts), the follow-up `TextData` frame was
+     ACK'd normally, and an independent re-read afterward showed
+     `genre=23/"Rock"` for both the disc name and every track.
+
+   **v1.5.1 bug, found immediately after (real hardware, same session)
+   -- fix also CONFIRMED against real hardware:** writing a track name
+   shortly after the successful genre write above silently reset genre
+   back to "Unassigned" -- both the standalone `DiscGenre` re-read and
+   every track's `TextData` re-read came back `genre: 0`. Root cause:
+   genre is a DISC-LEVEL value that the changer sets from the `genre`
+   byte of **every** `TextData` write it receives, not just the one it
+   happens to be attached to -- what looked like the changer "echoing
+   the disc's current genre into every reply" in Attempt 4 above was
+   actually only half the picture; it also *honors* that byte on every
+   *write*. `merge_genre_into_write_items()` was attaching genre only to
+   the disc-name item and leaving every track item's genre byte at 0,
+   which (it turns out) doesn't mean "don't touch genre" on this unit --
+   it means "set genre to Unassigned." Fixed: every item in a write
+   batch -- disc name and every track -- now carries the SAME genre byte
+   (the newly selected one, or the previously-known one if the dropdown
+   wasn't touched, so a plain name-only write can't silently erase an
+   existing genre). **Retested (slot 4): set genre to "Folk", then wrote
+   an unrelated track name with the dropdown left alone -- the follow-up
+   frame correctly carried genre `0x0b`/"Folk", and an independent
+   re-read afterward showed "Folk" for the disc name and every track,
+   with no reset.**
+
+   If the Disc Name row's Custom column is left blank when writing a
+   genre, the currently-known disc name is reused so it isn't wiped out;
+   if no disc name is known at all for that slot, the write is refused
+   rather than risking a blank name. The old standalone-`SET_DISC_GENRE`
+   plumbing (`build_genre_write_frames`, `encode_disc_genre`/
+   `decode_disc_genre`) is kept around unused in `pclink_app.py`/
+   `pclink_protocol.py`, same spirit as `encode_long_text_data`, in case
+   it's ever worth revisiting. The Disc Data tab's Genre row Custom
+   column is a dropdown (not free text) listing every value in
+   `pclink_protocol.GENRES` -- the changer only understands that fixed
+   enum, so free text isn't offered the way it is for names. See
+   `CHANGELOG.md`'s v1.4.1-v1.5.1 entries for the full raw-byte detail of
+   all four write approaches and the v1.5.1 bug.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

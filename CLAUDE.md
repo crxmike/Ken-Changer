@@ -49,6 +49,8 @@ feature.
 - `pclink_app.py` -- the Tkinter GUI.
 - `gnudb_client.py` -- gnudb.org HTTP client (stdlib only).
 - `test_write_feature.py` -- tests for the in-progress write feature.
+- `test_genre_feature.py` -- tests for the genre read/write feature
+  (v1.4.0).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

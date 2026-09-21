@@ -183,6 +183,11 @@ GENRES = {
     0x1C: "World Music",
 }
 
+# Reverse lookup for the Disc Data tab's Genre dropdown (Custom column):
+# maps a genre display name back to its numeric code. GENRES has no
+# duplicate names, so this is a clean 1:1 inverse.
+GENRE_NAME_TO_CODE = {name: code for code, name in GENRES.items()}
+
 
 class Format:
     NO_CDTEXT = 0x00

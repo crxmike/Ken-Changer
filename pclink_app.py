@@ -39,11 +39,73 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 
 # v1.3.0 -- writing disc/track names (Action.WRITE_NAME) via the Disc
 # Data tab's "Write to Changer" button, confirmed against real hardware
-# (see CHANGELOG.md). SET_DISC_GENRE/WRITE_PROGRAM/SET_USERFILES share
-# the same send_write() plumbing but have no UI yet. gnudb.org querying
-# is wired up but its live round-trip is unconfirmed -- see README.md's
-# "Not yet implemented" / "Honest gaps" sections.
-APP_VERSION = "1.3.0"
+# (see CHANGELOG.md).
+# v1.4.0 -- reading DiscGenre into the status panel + Disc Data tab, and
+# writing it back via the same "Write to Changer" button (Action.
+# SET_DISC_GENRE). NOT yet confirmed against real hardware -- per
+# CLAUDE.md's hard rule, this stays "should work" until the user reports
+# back with a raw-byte log. WRITE_PROGRAM/SET_USERFILES still share the
+# same send_write() plumbing but have no UI yet. gnudb.org querying is
+# wired up but its live round-trip is also still unconfirmed -- see
+# README.md's "Honest gaps" section.
+# v1.4.1 -- fixed a real bug caught by the user's first real-hardware
+# genre-write attempt: the initiating DataAccess(SET_DISC_GENRE) request
+# went out with its own `genre` field left at 0 ("Unassigned") instead of
+# the target value, because the call site never passed genre=genre_code.
+# See build_genre_write_frames() and CHANGELOG.md. STILL not confirmed
+# working -- the same log also showed the follow-up DiscGenre frame
+# getting an immediate EOT instead of ACK, an open question this fix
+# doesn't address; needs another real-hardware test.
+# v1.4.2 -- the user retested v1.4.1's fix: the request now correctly
+# carried the target genre, but the genre still didn't change, and the
+# follow-up DiscGenre frame was rejected with an immediate EOT again
+# (twice in a row now). Switched the genre write to a single ordinary
+# DataAccess transaction with NO follow-up frame -- since genre already
+# fits entirely inside DataAccess's own payload, unlike a name's
+# arbitrary text. NOT yet tried against real hardware.
+# v1.4.3 -- v1.4.2's single-transaction attempt was tried on real
+# hardware: the request went out correctly (genre byte verified on the
+# wire), the changer ACK'd it and sent ReadyForData same as before, and
+# the transaction closed cleanly -- but genre STILL didn't change. Since
+# ReadyForData means "send me the payload now" and we deliberately sent
+# nothing, this doesn't mean genre doesn't need a follow-up frame -- it
+# confirms it does, and the two rejected follow-up attempts in v1.4.0/
+# v1.4.1 must have had the wrong shape, not been unwanted altogether.
+# Read cd_types.html directly: Action.SET_DISC_GENRE/DataType.DISC_GENRE
+# and every proto.GENRES code already match the docs exactly, ruling out
+# a wrong-enum-value explanation. New lead instead: cd_textdata.html
+# shows TextData's payload (the one WRITE_NAME already uses, confirmed
+# working) has its own `genre` field alongside `text`. Genre writing is
+# now folded into a disc-name WRITE_NAME write (see
+# merge_genre_into_write_items()) instead of the standalone
+# Action.SET_DISC_GENRE path (three separate real-hardware attempts at
+# that have now failed in three different ways). NOT yet tried.
+# v1.5.0 -- v1.4.3's approach (genre folded into a disc-name WRITE_NAME
+# write) CONFIRMED against real hardware: writing genre "Rock" to slot 2
+# (via the Disc Data tab's Genre row, Custom Disc Name left blank so the
+# app reused the currently-known name) went out exactly like an ordinary
+# confirmed WRITE_NAME write, and an independent re-read afterward showed
+# genre=23/"Rock" for the disc name AND every track (the changer's
+# TextData replies apparently always echo the disc's current genre in
+# every reply, not just the one it was written through, which is
+# consistent with genre being a disc-level, not per-track, property).
+# The standalone Action.SET_DISC_GENRE path (v1.4.0-v1.4.2) never
+# worked; genre now always writes through Action.WRITE_NAME. See
+# CHANGELOG.md's v1.5.0 entry for the full four-attempt history.
+# v1.5.1 -- real bug, found by the user writing a track name shortly
+# after a genre write: writing ANY TextData (a track name, not just the
+# disc name) with its follow-up frame's genre byte left at the old
+# default of 0 SILENTLY RESET the disc's just-written genre ("Rock")
+# back to "Unassigned". Confirms genre is a disc-level value that EVERY
+# TextData write sets on this unit, not just the one it happened to be
+# attached to. Fixed: merge_genre_into_write_items() now attaches the
+# SAME genre byte -- the newly selected one, or the previously-known one
+# if the user didn't touch the Genre dropdown -- to every write item
+# (disc name AND every track), so an ordinary name-only write can no
+# longer accidentally erase an existing genre. CONFIRMED against real
+# hardware: writing a new genre ("Folk") then a track name in the same
+# session, genre stayed "Folk" throughout -- see CHANGELOG.md.
+APP_VERSION = "1.5.1"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -65,6 +127,100 @@ def gather_disc_data_write_items(disc_data_rows: list) -> list:
         else:
             items.append((i, text, proto.InfoType.TRACK_NAMES, f"Track {i}"))
     return items
+
+
+def build_genre_write_frames(slot: int, genre_code: int) -> tuple[bytes, bytes]:
+    """Builds the (request_data, follow_up_data) byte pairs for a
+    standalone Action.SET_DISC_GENRE write -- kept around (same spirit as
+    encode_long_text_data in pclink_protocol.py: a disproven-on-this-unit
+    approach preserved for reference/future retry) but NO LONGER used by
+    _write_to_changer_worker as of v1.4.3. History: three real-hardware
+    attempts at a standalone genre write all failed, in three different
+    ways -- v1.4.0 forgot to put the genre in the request at all; v1.4.1
+    fixed that but the follow-up DiscGenre frame got rejected with an
+    immediate EOT; v1.4.2 tried dropping the follow-up frame entirely,
+    but then nothing was sent after ReadyForData so nothing was written.
+    v1.4.3 instead folds genre into a WRITE_NAME/TextData write (see
+    merge_genre_into_write_items()), since cd_textdata.html shows
+    TextData's own payload already has a genre field, and that write path
+    is the one CONFIRMED working. See CHANGELOG.md's v1.4.1-v1.4.3
+    entries for the full history."""
+    request_data = proto.encode_data_access(
+        proto.Action.SET_DISC_GENRE, proto.DataType.DISC_GENRE, slot=slot, genre=genre_code,
+    )
+    follow_up_data = proto.encode_disc_genre(slot=slot, genre=genre_code)
+    return request_data, follow_up_data
+
+
+def gather_genre_write_item(genre_custom_text: str) -> int | None:
+    """Pure helper (unit-testable, same pattern as
+    gather_disc_data_write_items): maps whatever's selected in the Disc
+    Data tab's Genre row Custom dropdown back to a numeric genre code via
+    proto.GENRE_NAME_TO_CODE. Returns None for a blank selection (meaning
+    "don't write a genre") or unrecognized text -- distinct from actually
+    choosing the valid "Unassigned" (0x00) genre value, which returns
+    0x00, not None."""
+    text = (genre_custom_text or "").strip()
+    if not text:
+        return None
+    return proto.GENRE_NAME_TO_CODE.get(text)
+
+
+def merge_genre_into_write_items(
+    items: list, genre_code: int | None, current_disc_name: str | None,
+    current_genre: int | None = None,
+) -> tuple[list, str | None]:
+    """v1.4.3: folds a selected genre into disc-name/track-name write
+    items instead of sending it via a separate Action.SET_DISC_GENRE
+    write -- see build_genre_write_frames' and CHANGELOG.md's
+    v1.4.3/v1.5.0/v1.5.1 entries for why (cd_textdata.html shows
+    TextData's own payload already has a `genre` field, and that's the
+    one write path CONFIRMED working on real hardware; three earlier
+    attempts at a standalone genre write all failed).
+
+    v1.5.1, also real-hardware-confirmed: genre turns out to be a
+    DISC-LEVEL value that EVERY TextData write sets, not just the one
+    for the disc name -- confirmed the hard way when writing a track
+    name (with its follow-up frame's genre byte left at the old default
+    of 0) silently reset a just-written "Rock" genre back to
+    "Unassigned". So every item in the final list -- disc name AND every
+    track -- now carries the SAME `genre` byte: the newly selected
+    `genre_code` if the user picked one, else whatever `current_genre`
+    the app already knows for this slot (so a plain name-only write
+    doesn't erase an existing genre), else 0 if neither is known.
+
+    `items` is gather_disc_data_write_items()'s output: (index, text,
+    info_type, label) tuples. `current_genre` should be the app's cached
+    DiscGenre reading for this slot (self._genre_cache.get(slot)), used
+    only when genre_code is None. Returns (final_items, error):
+    final_items is a list of (index, text, info_type, label, genre)
+    5-tuples. `error` is None on success, or a user-facing message when
+    genre_code is not None but there's no disc name (neither a custom
+    entry nor a currently-known one) to attach a write to at all --
+    writing genre with a blank/empty name would risk clobbering the disc
+    name, so this refuses rather than guessing."""
+    effective_genre = genre_code if genre_code is not None else (current_genre or 0)
+
+    if genre_code is None:
+        return [(*it, effective_genre) for it in items], None
+
+    has_disc_name_item = any(
+        index == 0 and info_type == proto.InfoType.DISC_NAMES
+        for index, _text, info_type, _label in items
+    )
+    if not has_disc_name_item:
+        if not current_disc_name:
+            return [(*it, effective_genre) for it in items], (
+                "Can't write genre: it has to ride along with a disc-name "
+                "write (see README.md's \"Honest gaps\" #14), and no disc "
+                "name is known for this slot yet. "
+                "Either type one into the Disc Name row's Custom field, or "
+                "read the disc name first (Refresh from Changer / Get Disc "
+                "Name)."
+            )
+        items = [(0, current_disc_name, proto.InfoType.DISC_NAMES, "Disc Name (genre only)")] + items
+
+    return [(*it, effective_genre) for it in items], None
 
 
 class ScrollableFrame(ttk.Frame):
@@ -124,6 +280,7 @@ class App(tk.Tk):
         self._current_track: int | None = None
         self._disc_name_cache: dict[int, str] = {}          # slot -> name
         self._track_name_cache: dict[int, dict[int, str]] = {}  # slot -> {track: name}
+        self._genre_cache: dict[int, int] = {}               # slot -> genre code
         # slot -> {"tracks": {track_num: {minutes,seconds,frames}},
         #          "leadout": {minutes,seconds,frames} or None,
         #          "format": int}
@@ -143,6 +300,7 @@ class App(tk.Tk):
         # rebuilding the row widgets would otherwise silently discard
         # whatever they were in the middle of typing).
         self._custom_data_cache: dict[int, dict[int, str]] = {}  # slot -> {row_index: text}
+        self._custom_genre_cache: dict[int, str] = {}  # slot -> genre name chosen in the dropdown
         self._disc_data_rows: list[dict] = []  # row widgets/vars for the currently-shown slot
         self._disc_data_slot: int | None = None  # which slot _disc_data_rows corresponds to
 
@@ -214,7 +372,7 @@ class App(tk.Tk):
 
         self.status_labels = {}
         for i, key in enumerate([
-            "State", "Disc (slot)", "Disc Name", "Track", "Track Name",
+            "State", "Disc (slot)", "Disc Name", "Genre", "Track", "Track Name",
             "Program", "Mode", "Repeat", "Door", "Userfiles",
         ]):
             ttk.Label(status_frame, text=key + ":").grid(row=i, column=0, sticky="w")
@@ -283,6 +441,7 @@ class App(tk.Tk):
         ttk.Button(query_frame, text="Refresh TOC", command=self._get_disc_toc).pack(side="left", padx=2)
         ttk.Button(query_frame, text="Get Track Names", command=self._get_track_names).pack(side="left", padx=2)
         ttk.Button(query_frame, text="Get Disc Name", command=self._get_disc_name).pack(side="left", padx=2)
+        ttk.Button(query_frame, text="Get Genre", command=self._get_genre).pack(side="left", padx=2)
 
         # -- Table of Contents -------------------------------------------------------
         # The changer only exposes TOC data for the currently-loaded disc
@@ -351,9 +510,6 @@ class App(tk.Tk):
 
         dd_header = ttk.Frame(disc_data_tab)
         dd_header.grid(row=3, column=0, sticky="new")
-        # placeholder row for the header; the scrollable area starts below
-        # it. Rebuilt as row 4 so the header stays fixed while rows scroll.
-        disc_data_tab.rowconfigure(4, weight=1)
 
         for col, (text, width) in enumerate([
             ("", 10), ("From Changer", 34), ("From gnudb.org", 34), ("Custom (to write)", 34),
@@ -362,8 +518,46 @@ class App(tk.Tk):
                 row=0, column=col, sticky="w", padx=(2, 8)
             )
 
+        # Genre row: disc-level only (unlike Disc Name/Track Name, there's
+        # no per-track genre), so it's a fixed row of its own rather than
+        # part of the scrollable Disc Name/Track rows below -- those get
+        # torn down and rebuilt when the track count changes, which would
+        # otherwise fight with this row's own slot-keyed state. Custom
+        # column is a dropdown (not free text) listing every value in
+        # proto.GENRES, per the changer's fixed genre enum -- plus a blank
+        # entry meaning "don't write a genre", distinct from actually
+        # choosing the valid "Unassigned" value. Reading/writing genre via
+        # DataAccess(DiscGenre)/Action.SET_DISC_GENRE is wired up but NOT
+        # yet confirmed against real hardware -- see README.md's "Honest
+        # gaps" and CHANGELOG.md.
+        dd_genre_row = ttk.Frame(disc_data_tab)
+        dd_genre_row.grid(row=4, column=0, sticky="new", pady=(2, 4))
+        ttk.Label(dd_genre_row, text="Genre", width=10, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=(2, 8)
+        )
+        self.genre_changer_var = tk.StringVar(value="-")
+        ttk.Label(dd_genre_row, textvariable=self.genre_changer_var, width=34, anchor="w").grid(
+            row=0, column=1, sticky="w", padx=(2, 8)
+        )
+        self.genre_gnudb_var = tk.StringVar(value="-")
+        ttk.Label(dd_genre_row, textvariable=self.genre_gnudb_var, width=34, anchor="w").grid(
+            row=0, column=2, sticky="w", padx=(2, 8)
+        )
+        self.genre_custom_var = tk.StringVar(value="")
+        genre_dropdown_values = [""] + [proto.GENRES[code] for code in sorted(proto.GENRES)]
+        self.genre_custom_combo = ttk.Combobox(
+            dd_genre_row, textvariable=self.genre_custom_var, values=genre_dropdown_values,
+            state="readonly", width=32,
+        )
+        self.genre_custom_combo.grid(row=0, column=3, sticky="we", padx=(2, 8))
+
+        # placeholder row for the header/genre row; the scrollable
+        # Disc Name/Track rows area starts below both. Rebuilt as row 5 so
+        # they stay fixed while the track rows scroll.
+        disc_data_tab.rowconfigure(5, weight=1)
+
         dd_scroll = ScrollableFrame(disc_data_tab)
-        dd_scroll.grid(row=4, column=0, sticky="nsew")
+        dd_scroll.grid(row=5, column=0, sticky="nsew")
         self.disc_data_rows_frame = dd_scroll.inner
         for col, width in [(0, 10), (1, 34), (2, 34), (3, 34)]:
             self.disc_data_rows_frame.columnconfigure(col, minsize=width * 7)
@@ -566,13 +760,18 @@ class App(tk.Tk):
         self._last_state = None
         self._disc_name_cache.clear()
         self._track_name_cache.clear()
+        self._genre_cache.clear()
         self._toc_cache.clear()
-        for key in ("Disc Name", "Track Name"):
+        for key in ("Disc Name", "Genre", "Track Name"):
             self.status_labels[key].configure(text="-")
         self.toc_tree.delete(*self.toc_tree.get_children())
         self.toc_summary_label.configure(text="No TOC loaded yet.")
         self.discid_label.configure(text="")
         self._custom_data_cache.clear()
+        self._custom_genre_cache.clear()
+        self.genre_changer_var.set("-")
+        self.genre_gnudb_var.set("-")
+        self.genre_custom_var.set("")
         for w in self.disc_data_rows_frame.winfo_children():
             w.destroy()
         self._disc_data_rows = []
@@ -658,6 +857,11 @@ class App(tk.Tk):
         elif frame.command == proto.CMD_DISC_TOC:
             self._cache_toc(frame.payload)
 
+        elif frame.command == proto.CMD_DISC_GENRE:
+            p = frame.payload
+            self._log(f"DiscGenre: slot={p.get('slot')} genre={p.get('genre_name')}")
+            self._cache_genre(p)
+
         elif frame.command in (proto.CMD_TEXT_DATA, proto.CMD_LONG_TEXT_DATA):
             p = frame.payload
             index = p.get("index", p.get("track"))
@@ -676,11 +880,13 @@ class App(tk.Tk):
             self._current_track = track
 
         if slot_changed:
-            self._log(f"Now on disc slot {slot} -- auto-fetching disc/track names and TOC")
+            self._log(f"Now on disc slot {slot} -- auto-fetching disc/track names, genre, and TOC")
             self._fetch_names_for_slot(slot)
+            self._fetch_genre_for_slot(slot)
             self._fetch_toc_for_slot(slot)
 
         self._update_name_labels()
+        self._update_genre_label()
         self._update_toc_display()
         self._refresh_disc_data_from_changer()
 
@@ -719,6 +925,37 @@ class App(tk.Tk):
             track_name = self._track_name_cache.get(slot, {}).get(track)
         self._set_status("Disc Name", disc_name if disc_name else "-")
         self._set_status("Track Name", track_name if track_name else "-")
+
+    def _cache_genre(self, payload: dict):
+        slot = payload.get("slot")
+        genre = payload.get("genre")
+        if slot is None or genre is None:
+            return
+        self._genre_cache[slot] = genre
+        self._update_genre_label()
+        if slot == self._current_slot:
+            self._refresh_disc_data_from_changer()
+
+    def _update_genre_label(self):
+        slot = self._current_slot
+        genre = self._genre_cache.get(slot) if slot is not None else None
+        name = proto.GENRES.get(genre, f"0x{genre:02X}") if genre is not None else None
+        self._set_status("Genre", name if name else "-")
+
+    def _fetch_genre_for_slot(self, slot: int):
+        """Auto-triggered DiscGenre fetch, alongside _fetch_names_for_slot.
+        Same DataAccess/RETRIEVE_DATA convention already used for
+        DiscInfo/DiscTOC/TextData -- a request is assumed to produce
+        exactly one reply of the matching command byte (CMD_DISC_GENRE
+        here), per README.md's "Honest gaps" #3. Not yet confirmed against
+        real hardware specifically for DiscGenre."""
+        self._send_bg(
+            proto.CMD_DATA_ACCESS,
+            proto.encode_data_access(
+                proto.Action.RETRIEVE_DATA, proto.DataType.DISC_GENRE, slot=slot,
+            ),
+            f"DataAccess(DiscGenre, slot={slot}) [auto]",
+        )
 
     def _fetch_names_for_slot(self, slot: int):
         """Auto-triggered fetch (as opposed to the manual Get Disc Name /
@@ -897,9 +1134,11 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     # Disc Data tab. Column 3 ("Custom") writes back via Action.WRITE_NAME
-    # (disc/track names only) -- the only write action confirmed against
-    # real hardware; see pclink_link.py's send_write() and
-    # pclink_protocol.py's encode_text_data for the confirmed choreography.
+    # for the Disc Name/Track rows, and the Genre row's dropdown folds
+    # into that same write (see merge_genre_into_write_items()) rather
+    # than a separate action -- both CONFIRMED against real hardware; see
+    # pclink_link.py's send_write(), pclink_protocol.py's
+    # encode_text_data, and CHANGELOG.md's v1.3.0/v1.5.0 entries.
     # ------------------------------------------------------------------
 
     def _track_count_for_slot(self, slot: int) -> int:
@@ -929,6 +1168,18 @@ class App(tk.Tk):
             self._custom_data_cache[self._disc_data_slot] = saved
         else:
             self._custom_data_cache.pop(self._disc_data_slot, None)
+
+    def _save_custom_genre(self):
+        """Same idea as _save_custom_data, for the Genre row's dropdown
+        (which lives outside _disc_data_rows -- see the Genre row's
+        comment in _build_ui)."""
+        if self._disc_data_slot is None:
+            return
+        text = self.genre_custom_var.get()
+        if text:
+            self._custom_genre_cache[self._disc_data_slot] = text
+        else:
+            self._custom_genre_cache.pop(self._disc_data_slot, None)
 
     def _add_disc_data_row(self, index: int):
         row_var = tk.StringVar(value="")
@@ -966,10 +1217,12 @@ class App(tk.Tk):
         mid-typing into them) are left alone."""
         if slot != self._disc_data_slot:
             self._save_custom_data()
+            self._save_custom_genre()
             for w in self.disc_data_rows_frame.winfo_children():
                 w.destroy()
             self._disc_data_rows = []
             self._disc_data_slot = slot
+            self.genre_custom_var.set(self._custom_genre_cache.get(slot, ""))
 
         while len(self._disc_data_rows) < track_count + 1:
             self._add_disc_data_row(len(self._disc_data_rows))
@@ -985,6 +1238,7 @@ class App(tk.Tk):
         def update():
             if slot is None:
                 self.disc_data_summary.configure(text="No current disc known yet.")
+                self.genre_changer_var.set("-")
                 return
             track_count = self._track_count_for_slot(slot)
             self._set_disc_data_row_count(slot, track_count)
@@ -992,6 +1246,11 @@ class App(tk.Tk):
             self._disc_data_rows[0]["row_var"].set("Disc Name")
             disc_name = self._disc_name_cache.get(slot)
             self._disc_data_rows[0]["changer_var"].set(disc_name if disc_name else "-")
+
+            genre = self._genre_cache.get(slot)
+            self.genre_changer_var.set(
+                proto.GENRES.get(genre, f"0x{genre:02X}") if genre is not None else "-"
+            )
 
             names = self._track_name_cache.get(slot, {})
             for i in range(1, track_count + 1):
@@ -1138,6 +1397,7 @@ class App(tk.Tk):
 
             title = f"{disc.artist} / {disc.album}" if disc.artist else disc.album
             self._disc_data_rows[0]["gnudb_var"].set(title if title else "-")
+            self.genre_gnudb_var.set(disc.genre if disc.genre else "-")
             for i in range(1, track_count + 1):
                 self._disc_data_rows[i]["gnudb_var"].set(disc.track_titles.get(i, "-"))
 
@@ -1146,11 +1406,24 @@ class App(tk.Tk):
     def _write_to_changer(self):
         """Writes every non-empty column-3 ("Custom") entry back to the
         changer for the slot currently shown in the Disc Data tab, via
-        Action.WRITE_NAME -- the only write action confirmed against real
-        hardware (see pclink_link.py's send_write() / pclink_protocol.py's
+        Action.WRITE_NAME -- confirmed against real hardware for names
+        (see pclink_link.py's send_write() / pclink_protocol.py's
         encode_text_data). Row 0 is the disc name (InfoType.DISC_NAMES,
         index 0); rows 1..N are track names (InfoType.TRACK_NAMES, index =
-        track number), matching the read side's index convention."""
+        track number), matching the read side's index convention.
+
+        If the Genre row's dropdown has a selection, it's folded into
+        every name write's `genre` field (see
+        merge_genre_into_write_items()) rather than sent via a separate
+        action -- CONFIRMED against real hardware (v1.5.0-v1.5.1, see
+        CHANGELOG.md): writing "Rock" then "Folk" to slot 2/4 this way was
+        independently read back afterward and matched, and (v1.5.1) a
+        plain track-name-only write afterward no longer resets genre back
+        to "Unassigned" the way it did before that fix. Three earlier
+        real-hardware attempts at a standalone Action.SET_DISC_GENRE
+        write (v1.4.0-v1.4.2) all failed in three different ways before
+        this approach was tried -- see CHANGELOG.md's v1.4.1-v1.5.1
+        entries for that history."""
         link = self._require_link()
         if link is None:
             return
@@ -1160,22 +1433,47 @@ class App(tk.Tk):
             return
 
         items = gather_disc_data_write_items(self._disc_data_rows)
+        genre_code = gather_genre_write_item(self.genre_custom_var.get())
+        current_disc_name = self._disc_name_cache.get(slot)
+        current_genre = self._genre_cache.get(slot)
+        final_items, genre_error = merge_genre_into_write_items(
+            items, genre_code, current_disc_name, current_genre,
+        )
 
-        if not items:
+        if genre_error:
+            messagebox.showinfo("Can't write genre", genre_error)
+            if not items:
+                return
+            # Still preserve whatever genre is already known, even though
+            # the requested genre CHANGE couldn't be applied -- every
+            # TextData write sets the disc's genre (see
+            # merge_genre_into_write_items), so falling back to 0 here
+            # would silently erase an existing genre while just trying to
+            # write names.
+            final_items, _ = merge_genre_into_write_items(items, None, current_disc_name, current_genre)
+            genre_code = None
+
+        if not final_items:
             messagebox.showinfo("Nothing to write", "No custom values entered in column 3.")
             return
 
+        genre_warning = (
+            f"\n\nNote: genre will be written by re-sending the disc name "
+            f"({final_items[0][1]!r}) with the genre attached."
+            if genre_code is not None else ""
+        )
         if not messagebox.askyesno(
             "Write to Changer",
-            f"Write {len(items)} name(s) to slot {slot} on the changer?\n\n"
-            "This overwrites whatever is currently stored there for each one.",
+            f"Write {len(final_items)} value(s) to slot {slot} on the changer?\n\n"
+            "This overwrites whatever is currently stored there for each one."
+            + genre_warning,
         ):
             return
 
         self.dd_write_btn.configure(state="disabled")
-        self._log(f"Write to Changer: writing {len(items)} name(s) to slot {slot}...")
+        self._log(f"Write to Changer: writing {len(final_items)} value(s) to slot {slot}...")
         threading.Thread(
-            target=self._write_to_changer_worker, args=(link, slot, items), daemon=True
+            target=self._write_to_changer_worker, args=(link, slot, final_items), daemon=True
         ).start()
 
     def _write_to_changer_worker(self, link: PCLinkConnection, slot: int, items: list):
@@ -1183,24 +1481,36 @@ class App(tk.Tk):
         same one-at-a-time approach as the Disc Map scan worker
         (PCLinkConnection already serializes sends through its own IO
         thread regardless, but going one at a time here keeps the log
-        readable and lets one bad item not block the rest)."""
+        readable and lets one bad item not block the rest).
+
+        Each item is (index, text, info_type, label, genre) --
+        merge_genre_into_write_items()'s output. `genre` is 0 ("don't
+        care") for every item except, when a genre was selected in the
+        Disc Data tab's Genre row, the disc-name item -- which carries it
+        alongside the text, per cd_textdata.html's documented TextData
+        payload shape (slot/index/userfiles/info_type/genre/format/text).
+        """
         ok = 0
         failed = 0
-        for index, text, info_type, label in items:
+        wrote_genre = False
+        for index, text, info_type, label, genre in items:
             request_data = proto.encode_data_access(
                 proto.Action.WRITE_NAME, proto.DataType.TEXT_DATA,
                 slot=slot, info_type=info_type,
             )
             follow_up_data = proto.encode_text_data(
-                slot=slot, index=index, text=text, info_type=info_type,
+                slot=slot, index=index, text=text, info_type=info_type, genre=genre,
             )
             try:
                 link.send_write(
                     proto.CMD_DATA_ACCESS, request_data,
                     proto.CMD_TEXT_DATA, follow_up_data,
                 )
-                self._log(f"Write to Changer: {label} -> {text!r} written ok.")
+                suffix = " (genre attached)" if genre else ""
+                self._log(f"Write to Changer: {label} -> {text!r} written ok{suffix}.")
                 ok += 1
+                if genre:
+                    wrote_genre = True
             except PCLinkWriteUnconfirmed:
                 self._log(
                     f"Write to Changer: {label} -- changer never sent ReadyForData, "
@@ -1219,8 +1529,9 @@ class App(tk.Tk):
 
         self._log(f"Write to Changer: done -- {ok} written, {failed} failed.")
         if ok:
-            # Re-read from the changer so column 1 reflects what was
-            # actually written, rather than trusting the write locally.
+            # Re-read from the changer so column 1 (and the Genre row)
+            # reflect what was actually written, rather than trusting the
+            # write locally.
             self._send_bg(
                 proto.CMD_DATA_ACCESS,
                 proto.encode_data_access(
@@ -1237,6 +1548,14 @@ class App(tk.Tk):
                 ),
                 f"DataAccess(TrackNames, slot={slot})",
             )
+            if wrote_genre:
+                self._send_bg(
+                    proto.CMD_DATA_ACCESS,
+                    proto.encode_data_access(
+                        proto.Action.RETRIEVE_DATA, proto.DataType.DISC_GENRE, slot=slot,
+                    ),
+                    f"DataAccess(DiscGenre, slot={slot})",
+                )
         self.ui_queue.put(lambda: self.dd_write_btn.configure(state="normal"))
 
     def _copy_column_to_custom(self, source: str):
@@ -1245,11 +1564,23 @@ class App(tk.Tk):
             val = row[var_key].get()
             row["custom_var"].set(val if val and val != "-" else "")
 
+        genre_source_var = self.genre_changer_var if source == "changer" else self.genre_gnudb_var
+        genre_val = genre_source_var.get()
+        # The Custom column's Genre control is a fixed dropdown (only the
+        # changer's own enum, per proto.GENRES) -- only copy over a value
+        # that's actually one of those names; free-text gnudb genres (e.g.
+        # "Alternative") that don't match exactly are left blank rather
+        # than silently forced into the nearest-sounding option.
+        self.genre_custom_var.set(genre_val if genre_val in proto.GENRE_NAME_TO_CODE else "")
+
     def _clear_custom_data(self):
         for row in self._disc_data_rows:
             row["custom_var"].set("")
         if self._disc_data_slot is not None:
             self._custom_data_cache.pop(self._disc_data_slot, None)
+        self.genre_custom_var.set("")
+        if self._disc_data_slot is not None:
+            self._custom_genre_cache.pop(self._disc_data_slot, None)
 
     # ------------------------------------------------------------------
     # Commands
@@ -1421,6 +1752,17 @@ class App(tk.Tk):
                 info_type=proto.InfoType.DISC_NAMES,
             ),
             f"DataAccess(DiscName, slot={slot})",
+        )
+
+    def _get_genre(self):
+        slot = self.slot_var.get()
+        self._note_query_slot(slot)
+        self._send_bg(
+            proto.CMD_DATA_ACCESS,
+            proto.encode_data_access(
+                proto.Action.RETRIEVE_DATA, proto.DataType.DISC_GENRE, slot=slot,
+            ),
+            f"DataAccess(DiscGenre, slot={slot})",
         )
 
     # ------------------------------------------------------------------
