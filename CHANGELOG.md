@@ -1,5 +1,111 @@
 # Changelog
 
+## v1.6.2 -- Userfile param encoding CONFIRMED: it's a bit, not a number
+
+The user ran the test v1.6.1 asked for, on a real CD-425M (2026-09-22,
+raw-byte log):
+
+1. They tagged the current disc (slot 2) as Userfile #3 on the remote.
+   The changer sent an unprompted `InfoEvent` with `userfiles=0x04`.
+   This confirms the `userfiles` field is the documented bitmask
+   (#3 = bit 2 = `0x04`).
+2. They used the app's Set Mode with Userfile Mode and #3. The frame was
+   `02 0c 02 00 07 04 e7` (param `0x04`), and it was ACK'd. The changer
+   replied with `InfoEvent` `mode=7, param=0x04`, then Changing, then
+   Playing, on slot 2.
+
+**This settles it.** Read as a plain number, `0x04` would mean Userfile
+#4, and slot 2 isn't in #4 (its bitmask is only `0x04`). The changer
+played slot 2 and reported the same `0x04` back, so `param` is a bit,
+exactly what `proto.userfile_param()` already sends. No code change was
+needed. Docs, docstrings and tests (`TestUserfile3Session`) are updated.
+
+Still open from v1.6.1: whether `InfoEvent`'s `num_tracks` byte is
+really the disc's genre (this session's disc was Rock again, `0x17`), and
+whether Best mode needs something stored before it will switch.
+
+## v1.6.1 -- Play Mode selector: first real-hardware session (partly confirmed)
+
+The user tested v1.6.0 on a real CD-425M (2026-09-22, raw-byte log).
+
+**Confirmed:**
+- `ChangeMode` is a reply-less command. Every frame was ACK'd, our
+  closing `EOT` was ACK'd, and no reply data came back, matching its
+  0.0s entry in `REPLY_WINDOW_BY_COMMAND`. The frames on the wire matched
+  the encoder exactly (`02 0c 02 00 05 17 d6` for Music Type/Rock, and so
+  on; now in `test_mode_feature.py`'s `TestRealHardwareSession`).
+- **Music Type Mode (Rock) works.** The changer sent `InfoEvent` with
+  `mode=5` and started playing.
+- **Userfile Mode (#1) works.** `InfoEvent` came back with `mode=7,
+  param=0x01`, and the changer moved to slot 3, which is tagged
+  Userfile #1.
+- **Mode changes made on the remote show up correctly.** Picking
+  Userfile #2 on the remote gave `InfoEvent` `mode=7, param=0x02`.
+
+**New real-hardware behavior: the changer silently ignores a mode it
+can't enter.** Best Mode and Program Mode (no program stored) were both
+ACK'd normally, and then nothing happened: no `InfoEvent`, no error.
+Whether Best failed for the same reason (nothing stored for it) isn't
+known yet. Since the protocol gives no failure signal, `_change_mode`
+now records the requested mode, and `_check_mode_took` logs a notice if
+no `InfoEvent` reports it within `MODE_CHANGE_TIMEOUT_MS` (5s). Real
+switches in this session reported back within a second.
+
+**Docs contradicted: `InfoEvent`'s `param` isn't the genre in Music Type
+mode.** While playing in Music Type (Rock), `param` read `0x00`, not
+`0x17`. v1.6.0 displayed that as "Unassigned (0x00)", which was
+misleading. `describe_mode_param()` now shows only the raw byte in genre
+modes.
+
+**Probably also contradicted, not confirmed yet: `InfoEvent`'s
+`num_tracks` byte.** It read `0x17` on slots 2, 3 and 4. Their TOCs
+show 13, 10 and 12 tracks, and all three are genre Rock (`0x17`, per
+`DiscGenre`). So this byte looks like the current disc's genre, not a
+track count. It's documented in `decode_info_event` but not renamed,
+since every disc seen so far was Rock. The next step is a non-Rock disc.
+
+**Still open: the userfile `param` encoding.** Userfile #1 and #2 encode
+to `0x01`/`0x02` whether it's a number or a bit, so this session can't
+tell them apart. Userfile #3 is the first that differs (`0x03` as a
+number vs `0x04` as a bit).
+
+Also noticed: `InfoEvent`'s `program` byte was `1` in the Music Type and
+Userfile modes and `0` in Track mode, although the docs say it's "only
+set in program mode". Its meaning is unknown and it isn't used.
+
+## v1.6.0 -- Play Mode selector (ChangeMode), NOT yet tried on real hardware
+
+**What's new:** a "Play mode" row on the Control tab's Transport panel:
+a dropdown of all ten `proto.MODE_NAMES` modes plus a "Set Mode" button
+that sends `ChangeMode` (`cd_changemode.html`: `byte mode, byte param`).
+A Genre dropdown is enabled only for the two Music Type modes and a
+Userfile # spinbox (1-8) only for the three Userfile modes; `param` is 0
+for everything else. Like `ChangeDisc`, the button doesn't update the
+Mode status row itself -- the changer's own `InfoEvent` is what shows
+whether the mode actually changed.
+
+Also new: a "Mode Param" status row showing `InfoEvent`'s `param` byte
+(`describe_mode_param()`): the genre name in Music Type modes, the
+userfile in Userfile modes, and the raw hex byte in every case.
+
+**Open question, deliberately surfaced rather than guessed silently:**
+the docs say `param` "is a userfile" in the Userfile modes but not
+whether that's a plain number (1-8 / 0-7) or a bit. `proto.userfile_param()`
+assumes the bit encoding `InfoEvent`'s `userfiles` field documents
+("bit or'd combination of userfiles", so #1 -> `0x01`, #3 -> `0x04`).
+The easiest way to settle it: pick a userfile mode from the changer's
+own front panel/remote and read the raw byte in the new Mode Param row.
+If it doesn't match, only `userfile_param()` needs changing.
+
+**Worth checking on hardware:** that `ChangeMode` gets ACK'd with no
+reply data (its reply window is 0.0s in `REPLY_WINDOW_BY_COMMAND`, same
+as `ChangeDisc`), that the next `InfoEvent` reports the new mode, and
+what the changer does when a mode has nothing to play (for example,
+Program mode with no program stored, or a genre with no discs).
+
+Tests: `test_mode_feature.py` (payload layout, frame checksum, per-mode
+param handling, `InfoEvent` param description).
+
 ## v1.5.2 -- Renamed the app to "Ken Changer"
 
 **What changed:** the app's display name changed from "Kenwood PC-Link

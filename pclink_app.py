@@ -35,6 +35,7 @@ from pclink_protocol import Frame
 import gnudb_client
 
 
+MODE_CHANGE_TIMEOUT_MS = 5000  # how long to wait for an InfoEvent after Set Mode
 REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while held
 
 # v1.3.0 -- writing disc/track names (Action.WRITE_NAME) via the Disc
@@ -105,7 +106,19 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # longer accidentally erase an existing genre. CONFIRMED against real
 # hardware: writing a new genre ("Folk") then a track name in the same
 # session, genre stayed "Folk" throughout -- see CHANGELOG.md.
-APP_VERSION = "1.5.2"
+# v1.6.0 -- Play Mode selector on the Control tab (ChangeMode), plus a
+# "Mode Param" status row showing InfoEvent's raw param byte. NOT yet
+# tried against real hardware -- see build_change_mode_request().
+# v1.6.1 -- first real-hardware session: Music Type and Userfile #1
+# switched modes; Best and Program (nothing stored) were ACK'd then
+# silently ignored, so Set Mode now logs a notice if no InfoEvent reports
+# the new mode within MODE_CHANGE_TIMEOUT_MS. InfoEvent's param came back
+# 0x00 in Music Type (Rock) mode, so the Mode Param row no longer names a
+# genre from it. Userfile number-vs-bit encoding still open (#1/#2 are
+# the same byte either way).
+# v1.6.2 -- userfile param encoding CONFIRMED as a bit (#3 -> 0x04) on
+# real hardware. No code change; docs/tests only.
+APP_VERSION = "1.6.2"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -223,6 +236,36 @@ def merge_genre_into_write_items(
     return [(*it, effective_genre) for it in items], None
 
 
+MODE_NAME_TO_CODE = {name: code for code, name in proto.MODE_NAMES.items()}
+
+
+def build_change_mode_request(mode_name: str, genre_name: str, userfile_number: int) -> tuple[bytes, str]:
+    """Turn the Control tab's Play Mode row into a ChangeMode payload + log
+    label. `genre_name` is only used for the Music Type modes and
+    `userfile_number` (1..8) only for the Userfile modes; param is 0
+    otherwise. Raises ValueError for a selection that can't be sent.
+
+    Confirmed on real hardware for Music Type and Userfile modes,
+    including the userfile bit encoding (v1.6.1/v1.6.2). A mode the
+    changer can't enter is silently ignored -- see _check_mode_took.
+    """
+    mode = MODE_NAME_TO_CODE.get(mode_name)
+    if mode is None:
+        raise ValueError(f"Unknown play mode {mode_name!r}.")
+    if mode in proto.GENRE_MODES:
+        param = proto.GENRE_NAME_TO_CODE.get(genre_name.strip())
+        if param is None:
+            raise ValueError("Pick a genre for Music Type mode.")
+        detail = f", genre={genre_name.strip()}"
+    elif mode in proto.USERFILE_MODES:
+        param = proto.userfile_param(userfile_number)
+        detail = f", userfile=#{userfile_number}"
+    else:
+        param = 0
+        detail = ""
+    return proto.encode_change_mode(mode, param), f"ChangeMode({mode_name}{detail}, param=0x{param:02X})"
+
+
 class ScrollableFrame(ttk.Frame):
     """A vertically-scrollable container. Put widgets in `.inner` (an
     ordinary ttk.Frame) the same way you would in any other frame; this
@@ -321,6 +364,13 @@ class App(tk.Tk):
         self._disc_map_stop = threading.Event()
         self._disc_map_scanning = False
 
+        # Mode code from the last "Set Mode" click, until an InfoEvent
+        # reports it. Confirmed on real hardware: the changer ACKs a
+        # ChangeMode it can't honor (e.g. Program mode with no program
+        # stored) and then just sends nothing -- no InfoEvent, no error --
+        # so the only way to notice is that the mode never shows up.
+        self._pending_mode: int | None = None
+
         self._build_ui()
         self._poll_ui_queue()
         self._refresh_ports()
@@ -373,7 +423,7 @@ class App(tk.Tk):
         self.status_labels = {}
         for i, key in enumerate([
             "State", "Disc (slot)", "Disc Name", "Genre", "Track", "Track Name",
-            "Program", "Mode", "Repeat", "Door", "Userfiles",
+            "Program", "Mode", "Mode Param", "Repeat", "Door", "Userfiles",
         ]):
             ttk.Label(status_frame, text=key + ":").grid(row=i, column=0, sticky="w")
             lbl = ttk.Label(status_frame, text="-", font=("", 10, "bold"), wraplength=220)
@@ -434,6 +484,34 @@ class App(tk.Tk):
         self.track_var = tk.IntVar(value=1)
         ttk.Spinbox(goto_frame, from_=1, to=99, textvariable=self.track_var, width=6).grid(row=0, column=3, padx=4)
         ttk.Button(goto_frame, text="Change Disc / Play", command=self._change_disc).grid(row=0, column=4, padx=8)
+
+        # Play Mode (ChangeMode). The genre / userfile pickers only apply
+        # to the Music Type / Userfile modes, so they're disabled otherwise.
+        mode_frame = ttk.Frame(transport_frame)
+        mode_frame.pack(fill="x", pady=(8, 0))
+        ttk.Label(mode_frame, text="Play mode:").grid(row=0, column=0, sticky="w")
+        self.mode_var = tk.StringVar(value=proto.MODE_NAMES[proto.Mode.TRACK])
+        mode_combo = ttk.Combobox(
+            mode_frame, textvariable=self.mode_var, state="readonly", width=28,
+            values=[proto.MODE_NAMES[code] for code in sorted(proto.MODE_NAMES)],
+        )
+        mode_combo.grid(row=0, column=1, columnspan=3, sticky="w", padx=4)
+        mode_combo.bind("<<ComboboxSelected>>", lambda e: self._update_mode_param_widgets())
+        ttk.Button(mode_frame, text="Set Mode", command=self._change_mode).grid(row=0, column=4, padx=8)
+        ttk.Label(mode_frame, text="Genre:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.mode_genre_var = tk.StringVar(value="")
+        self.mode_genre_combo = ttk.Combobox(
+            mode_frame, textvariable=self.mode_genre_var, state="readonly", width=20,
+            values=[proto.GENRES[code] for code in sorted(proto.GENRES)],
+        )
+        self.mode_genre_combo.grid(row=1, column=1, sticky="w", padx=4, pady=(4, 0))
+        ttk.Label(mode_frame, text="Userfile #:").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        self.mode_userfile_var = tk.IntVar(value=1)
+        self.mode_userfile_spin = ttk.Spinbox(
+            mode_frame, from_=1, to=8, textvariable=self.mode_userfile_var, width=4, state="readonly",
+        )
+        self.mode_userfile_spin.grid(row=1, column=3, sticky="w", padx=4, pady=(4, 0))
+        self._update_mode_param_widgets()
 
         query_frame = ttk.Frame(transport_frame)
         query_frame.pack(fill="x", pady=(8, 0))
@@ -758,6 +836,7 @@ class App(tk.Tk):
         self._current_slot = None
         self._current_track = None
         self._last_state = None
+        self._pending_mode = None
         self._disc_name_cache.clear()
         self._track_name_cache.clear()
         self._genre_cache.clear()
@@ -820,6 +899,9 @@ class App(tk.Tk):
             self._set_status("Track", str(p.get("track", "-")))
             self._set_status("Program", str(p.get("program", "-")))
             self._set_status("Mode", p.get("mode_name", "-"))
+            self._set_status("Mode Param", p.get("param_desc", "-"))
+            if p.get("mode") == self._pending_mode:
+                self._pending_mode = None
             self._set_status("Repeat", "On" if p.get("repeat") else "Off")
             self._set_status("Userfiles", ", ".join(p.get("userfile_names", [])) or "-")
             self._note_current_position(p.get("slot"), p.get("track"))
@@ -1704,6 +1786,37 @@ class App(tk.Tk):
             proto.CMD_CHANGE_DISC,
             proto.encode_change_disc(slot, track, begin=True),
             f"ChangeDisc(slot={slot}, track={track})",
+        )
+
+    def _update_mode_param_widgets(self):
+        mode = MODE_NAME_TO_CODE.get(self.mode_var.get())
+        self.mode_genre_combo.configure(state="readonly" if mode in proto.GENRE_MODES else "disabled")
+        self.mode_userfile_spin.configure(state="readonly" if mode in proto.USERFILE_MODES else "disabled")
+
+    def _change_mode(self):
+        try:
+            payload, label = build_change_mode_request(
+                self.mode_var.get(), self.mode_genre_var.get(), self.mode_userfile_var.get(),
+            )
+        except ValueError as exc:
+            messagebox.showerror("Can't change mode", str(exc))
+            return
+        # Like ChangeDisc, don't touch the Mode status row here -- the
+        # changer's own InfoEvent is what confirms the mode actually took.
+        mode = MODE_NAME_TO_CODE[self.mode_var.get()]
+        self._pending_mode = mode
+        self._send_bg(proto.CMD_CHANGE_MODE, payload, label)
+        self.after(MODE_CHANGE_TIMEOUT_MS, lambda: self._check_mode_took(mode))
+
+    def _check_mode_took(self, mode: int):
+        if self._pending_mode != mode:
+            return  # took, or superseded by a later Set Mode click
+        self._pending_mode = None
+        self._log(
+            f"{proto.MODE_NAMES[mode]} didn't take -- the changer accepted the "
+            f"command but never reported the new mode. It does this when a "
+            f"mode has nothing to play (seen with Program mode and no program "
+            f"stored)."
         )
 
     def _get_disc_info(self):

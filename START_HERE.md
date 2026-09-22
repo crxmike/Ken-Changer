@@ -50,8 +50,19 @@ Reading genre has worked cleanly in every session so far. See
 `CHANGELOG.md`'s v1.4.1-v1.5.1 entries and README.md's "Honest gaps"
 #13/#14 for the full detail.
 
+**v1.6.0-v1.6.2** -- a Play Mode selector (`ChangeMode`) on the Control
+tab, plus a "Mode Param" status row. **Partly confirmed on real
+hardware.** Music Type and Userfile modes switch correctly. The changer
+silently ignores a mode it can't enter (seen with Best, and Program with
+nothing stored), so the app logs a notice when a mode doesn't take.
+The userfile param is CONFIRMED as a bit (#3 -> `0x04`, v1.6.2). See
+`CHANGELOG.md`'s v1.6.1/v1.6.2 entries and README "Honest gaps" #15.
+
 ## In progress / next up
 
+- **Play Mode selector leftovers.** Play a non-Rock disc to check
+  whether `InfoEvent`'s `num_tracks` byte is really the disc's genre,
+  and find out whether Best mode needs something stored first.
 - **`WRITE_PROGRAM` / `SET_USERFILES`** share `send_write()`'s plumbing
   with the now-confirmed `WRITE_NAME` path but have no UI yet, and their
   encoders are untested against real hardware beyond round-trip
@@ -85,6 +96,8 @@ Reading genre has worked cleanly in every session so far. See
 - `gnudb_client.py` -- gnudb.org HTTP client (stdlib only).
 - `test_write_feature.py` -- tests for the write-to-changer feature
   (names, confirmed; genre/program/userfiles encoders, round-trip only).
+- `test_mode_feature.py` -- tests for the v1.6.0 Play Mode selector
+  (`ChangeMode`); not yet confirmed on real hardware.
 - `test_genre_feature.py` -- tests for the genre read/write feature;
   confirmed against real hardware as of v1.5.0 (writes fold into a
   `WRITE_NAME` write rather than a standalone action), including a

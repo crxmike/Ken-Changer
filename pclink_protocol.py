@@ -234,6 +234,46 @@ MODE_NAMES = {
 }
 
 
+# Per cd_changemode.html / cd_infoevent.html: ChangeMode's (and
+# InfoEvent's) `param` byte is a genre in the Music Type modes and a
+# userfile in the Userfile modes; unused otherwise.
+GENRE_MODES = frozenset({Mode.GENRE, Mode.GENRE_RANDOM_ALL})
+USERFILE_MODES = frozenset({Mode.USERFILE, Mode.USERFILE_RANDOM_ONE, Mode.USERFILE_RANDOM_ALL})
+
+
+def userfile_param(number: int) -> int:
+    """ChangeMode's `param` for userfile #number (1..8).
+
+    The docs only say param "is a userfile", not whether that's a
+    number or a bit. It's a bit, the same encoding as InfoEvent's
+    `userfiles` field (USERFILE_BITS): userfile #1 -> 0x01, #8 -> 0x80.
+    CONFIRMED on real hardware (v1.6.2): with slot 2 tagged only as
+    userfile #3 (InfoEvent userfiles=0x04), ChangeMode(Userfile, 0x04)
+    was accepted, reported back as param=0x04, and played slot 2. Read
+    as a number, 0x04 would have been userfile #4, which slot 2 isn't in.
+    """
+    if not 1 <= number <= 8:
+        raise ValueError(f"userfile number must be 1..8, got {number}")
+    return 1 << (number - 1)
+
+
+def describe_mode_param(mode: int, param: int) -> str:
+    """Human-readable InfoEvent `param`, always including the raw byte
+    (the userfile encoding in particular is unconfirmed -- see
+    userfile_param).
+
+    Genre modes deliberately show only the raw byte: on real hardware
+    (2026-09-22) a ChangeMode(Music Type, Rock=0x17) that the changer
+    accepted came back in InfoEvent with param=0x00, not 0x17 -- so
+    InfoEvent's param isn't the selected genre, despite the docs, and
+    naming it would show a misleading "Unassigned".
+    """
+    if mode in USERFILE_MODES:
+        names = userfile_list(param)
+        return f"{', '.join(names) or 'none'} (0x{param:02X})"
+    return f"0x{param:02X}"
+
+
 class State:
     STOPPED = 0x40
     STOPPING = 0x50
@@ -661,6 +701,13 @@ def decode_disc_listing(data: bytes) -> dict:
 
 
 def decode_info_event(data: bytes) -> dict:
+    # `userfiles` is CONFIRMED as the documented bitmask (v1.6.2): tagging
+    # slot 2 as userfile #3 on the remote made it read 0x04.
+    # `num_tracks` is the docs' name for byte 5, but on real hardware
+    # (2026-09-22) it read 0x17 for slots 2, 3 and 4 -- discs with 13, 10
+    # and 12 tracks, all genre Rock (0x17, per DiscGenre). So it looks
+    # like the disc's GENRE, not its track count. Not renamed yet: every
+    # disc seen so far was Rock, so a non-Rock disc is needed to confirm.
     slot, track, program, num_tracks, userfiles, param, mode, repeat = struct.unpack(
         "<HBBBBBBB", data[:9]
     )
@@ -672,6 +719,7 @@ def decode_info_event(data: bytes) -> dict:
         "userfiles": userfiles,
         "userfile_names": userfile_list(userfiles),
         "param": param,
+        "param_desc": describe_mode_param(mode, param),
         "mode": mode,
         "mode_name": MODE_NAMES.get(mode, f"0x{mode:02X}"),
         "repeat": bool(repeat),

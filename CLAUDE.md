@@ -51,6 +51,8 @@ feature.
 - `test_write_feature.py` -- tests for the in-progress write feature.
 - `test_genre_feature.py` -- tests for the genre read/write feature
   (v1.4.0).
+- `test_mode_feature.py` -- tests for the Play Mode selector
+  (`ChangeMode`, v1.6.0).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

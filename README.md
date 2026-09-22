@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.5.2 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.6.2 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre, all confirmed working against
 real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Querying gnudb.org is wired up but
@@ -14,7 +14,8 @@ disc-level value that EVERY `WRITE_NAME` write sets, so v1.5.1 fixed
 name was silently resetting genre back to "Unassigned."** See "Honest
 gaps" #14 and `CHANGELOG.md`'s v1.4.1-v1.5.1 entries for the full history
 if you're extending this. `WRITE_PROGRAM`/`SET_USERFILES` are still
-defined at the protocol layer but have no UI yet.
+defined at the protocol layer but have no UI yet. v1.6.x adds a play
+mode selector (`ChangeMode`), **partly confirmed on real hardware**.
 
 A small desktop app for controlling a Kenwood CD-425M CD changer (also
 compatible with the CD-4700M / CD-4260M, which use the same command set)
@@ -71,6 +72,13 @@ python pclink_app.py
   requested for the currently-loaded disc (confirmed against real hardware
   that it isn't available for other slots), so this panel ignores the slot
   spinbox and always tracks what's actually playing.
+- **Play mode selector** (v1.6.2, **confirmed on real hardware for
+  Music Type and Userfile modes**; see "Honest gaps" #15): pick any of the changer's ten play modes (Track, Program,
+  Best, Music Type, Userfile, and their random variants) and click "Set
+  Mode" to send `ChangeMode`. Music Type modes take a genre and Userfile
+  modes take a userfile number (1-8). A "Mode Param" status row shows the
+  genre or userfile the changer reports back, plus its raw byte. See
+  "Honest gaps" #15.
 - **Queries**: on-demand DiscInfo (track count/format) and disc/track name
   text lookups for an arbitrary slot.
 - **Disc Data tab**: a row-aligned, three-column view of the current disc's
@@ -525,6 +533,24 @@ exactly what's happening):
    enum, so free text isn't offered the way it is for names. See
    `CHANGELOG.md`'s v1.4.1-v1.5.1 entries for the full raw-byte detail of
    all four write approaches and the v1.5.1 bug.
+
+15. **Play mode selector (`ChangeMode`) -- PARTLY confirmed against real
+   hardware (v1.6.1).** Confirmed: `ChangeMode` is ACK'd with no reply
+   data. Music Type (Rock) and Userfile #1 switch modes, and a mode change
+   made on the remote shows up in the status panel. **The changer silently
+   ignores a mode it can't enter**: Best and Program (with no program
+   stored) were ACK'd and then nothing happened, with no event and no
+   error. The app now logs a notice if no `InfoEvent` reports the new mode
+   within 5s. **The userfile `param` is a bit, not a number: CONFIRMED
+   (v1.6.2).** Slot 2 was tagged only as #3 (`userfiles=0x04`), and
+   `ChangeMode(Userfile, 0x04)` played it. Still open:
+   - **Best mode.** Does it need something stored first, the way Program
+     does?
+   - **`InfoEvent`'s `param` in Music Type mode.** It read `0x00`, not the
+     selected genre, so the Mode Param row shows only the raw byte there.
+   - **`InfoEvent`'s `num_tracks` byte looks like the disc's genre.** It
+     read `0x17` (Rock) on three all-Rock discs with 13/10/12 tracks. This
+     needs a non-Rock disc to confirm before the field is renamed.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.
