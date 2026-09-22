@@ -50,22 +50,19 @@ Reading genre has worked cleanly in every session so far. See
 `CHANGELOG.md`'s v1.4.1-v1.5.1 entries and README.md's "Honest gaps"
 #13/#14 for the full detail.
 
-**v1.6.0-v1.6.2** -- a Play Mode selector (`ChangeMode`) on the Control
+**v1.6.0-v1.6.6** -- a Play Mode selector (`ChangeMode`) on the Control
 tab, plus a "Mode Param" status row. **Partly confirmed on real
-hardware.** Music Type and Userfile modes switch correctly. The changer
-silently ignores a mode it can't enter (seen with Best, and Program with
-nothing stored), so the app logs a notice when a mode doesn't take.
+hardware.** Track, Music Type and Userfile modes switch correctly. The
+changer silently ignores some mode changes, so the app logs a notice when
+a mode doesn't take. **Best and Program can't be set over PC-Link at
+all** (CONFIRMED v1.6.4/v1.6.6: ignored while playing, while stopped, and
+with a list stored, although both work from the remote), so they're left
+out of the dropdown.
 The userfile param is CONFIRMED as a bit (#3 -> `0x04`, v1.6.2). See
 `CHANGELOG.md`'s v1.6.1/v1.6.2 entries and README "Honest gaps" #15.
 
 ## In progress / next up
 
-- **Play Mode selector leftovers.** Play a non-Rock disc to check
-  whether `InfoEvent`'s `num_tracks` byte is really the disc's genre.
-  Best mode almost certainly needs tracks registered first (the owner's
-  manual describes it as a list of up to 32 favorite tracks, added one
-  at a time with the BEST SELECTION button while each track plays).
-  Register one and retry Set Mode to confirm.
 - **`WRITE_PROGRAM` / `SET_USERFILES`** share `send_write()`'s plumbing
   with the now-confirmed `WRITE_NAME` path but have no UI yet, and their
   encoders are untested against real hardware beyond round-trip

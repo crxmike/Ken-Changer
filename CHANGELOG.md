@@ -1,5 +1,121 @@
 # Changelog
 
+## v1.6.6 -- Program mode can't be set over PC-Link either; removed from the dropdown
+
+The user stored a program from the remote and tested on a real CD-425M
+(2026-09-22, raw-byte log):
+
+- **Played from the remote, the program works**, and the status panel
+  follows it: `InfoEvent` `mode=3` for slot 4 track 1 (`program=1`),
+  slot 4 track 2, then slot 2 track 4 (`program=2`). So in Program mode
+  the `program` byte is the current step number, as documented. (It's
+  also non-zero in Best/Music Type/Userfile modes, so it seems to be a
+  general "position in the list" counter.)
+- **The app's `ChangeMode(Program)` (`02 0c 02 00 03 00 ef`) was ignored
+  every time**: three times while Playing (16:56:05, 16:57:37, 16:57:51)
+  and once while Stopped (16:58:11). Each was ACK'd, and then no
+  `InfoEvent` followed. `ChangeMode(Track)` sent in between (16:57:41)
+  worked normally.
+
+**Conclusion: Program behaves exactly like Best (v1.6.4).** A stored
+program plays from the remote and reports the same mode code the app
+sends, but `ChangeMode` won't switch into it, playing or stopped. v1.6.1's
+"nothing to play" explanation for the first ignored Program request is
+now disproved too.
+
+**Changed:** `Mode.PROGRAM` joins `Mode.BEST` in
+`CHANGE_MODE_UNSUPPORTED`, so the Play Mode dropdown offers only Track,
+Music Type and Userfile modes (all confirmed working). The "didn't take"
+notice no longer names a cause. It's kept as a safety net. Tests:
+`TestProgramModeUnsupported`.
+
+**Not tried, possible future lead:** `DoAction`'s documented codes
+(`0xCBA0` Play/Pause, `0xC9A0` Stop, ...) look like the remote's own key
+codes. If the remote's P.MODE and BEST SELECTION keys have codes of their
+own, sending those via `DoAction` might start these modes. They aren't
+documented, and guessing codes at real hardware wasn't done.
+
+## v1.6.5 -- InfoEvent's "num_tracks" byte CONFIRMED as the disc's genre; Music Type confirmed with two genres
+
+The user re-tagged slot 4 as Alternative Rock and tested on a real CD-425M
+(2026-09-22, raw-byte log):
+
+- **At connect, in plain Track Mode**, `InfoEvent` for slot 4 read byte 5
+  = `0x03` (`02 12 09 00 04 00 01 00 03 00 ...`). Slot 4 has 12 tracks,
+  and its `DiscGenre` is `0x03` (Alternative Rock). Slot 2 (Rock, 13
+  tracks) still reads `0x17`. Since no genre was selected in Track Mode,
+  **byte 5 is the current disc's genre, not the track count the docs
+  call it.** This settles v1.6.1's all-Rock hunch. `decode_info_event`
+  now returns it as `genre`/`genre_name` (the `num_tracks` key is gone;
+  nothing in the app used it).
+- **Music Type → Rock** (`02 0c 02 00 05 17 d6`) played slot 2, a Rock
+  disc. **Music Type → Alternative Rock** (`02 0c 02 00 05 03 ea`) played
+  slot 4, the Alternative Rock disc. The genre `param` works for more than
+  one genre, and `InfoEvent`'s `param` was `0x00` both times.
+
+Also: **Program mode is parked** at the user's request. Setting up a
+program from the remote was proving tricky, and it'll be revisited later.
+README "Honest gaps" #15 was rewritten into one clean list (the v1.6.4
+edit had left the Best note in the middle of the "still open" items).
+Tests: `TestTwoGenreSession`.
+
+## v1.6.4 -- Best mode can't be set over PC-Link; removed from the dropdown
+
+The user tested v1.6.3's theory on a real CD-425M (2026-09-22): they
+pressed Stop (`StateEvent` Stopping, then Stopped at 16:26:12), then sent
+Set Mode → Best (`02 0c 02 00 04 00 ee`) at 16:26:37. It was ACK'd, our
+`EOT` was ACK'd, and nothing followed. The 5-second notice fired.
+
+**The "only while stopped" theory is disproved for Best.** Across three
+sessions, `ChangeMode(Best)` has been ignored while Playing (twice),
+while Stopped (once) and with a Best list stored, even though Best
+started from the remote works and reports `mode=4`, the same code we
+send. The conclusion: **this unit doesn't honor `ChangeMode` for Best
+mode.** (A `param` value the docs don't mention can't be completely ruled
+out, but there's no evidence for one: the remote-started Best reported
+`param=0`.)
+
+**Changed:** Best is left out of the Play Mode dropdown
+(`CHANGE_MODE_UNSUPPORTED` / `change_mode_choices()` in `pclink_app.py`).
+The status panel still shows Best when it's started from the remote. The
+"didn't take" notice now only mentions the remaining known case, Program
+mode with nothing stored. Program is still open: it has only been tried
+once, while Playing and with nothing stored. Tests:
+`TestBestModeUnsupported`.
+
+## v1.6.3 -- Best mode ignored even with a Best list; "nothing to play" theory disproved
+
+The user retested Best mode on a real CD-425M (2026-09-22, raw-byte log):
+
+1. They started Best playback from the remote. The changer sent
+   `InfoEvent` `mode=4` (Best), slot 3 track 3, `program=1` (presumably
+   the "BEST01" list position). So `Mode.BEST = 0x04` matches what the
+   changer itself reports, and the Best list isn't empty.
+2. The app's Set Mode → Track Mode (`02 0c 02 00 00 00 f2`) **worked**:
+   `InfoEvent` `mode=0` came back right away. Next Track then moved to
+   track 4, which isn't in the Best list.
+3. The app's Set Mode → Best Mode (`02 0c 02 00 04 00 ee`, same bytes as
+   in v1.6.1) was ACK'd and then **ignored again**: no `InfoEvent`. The
+   app's 5-second notice fired.
+
+**What this disproves:** v1.6.1 and the owner's-manual notes guessed
+Best was ignored because nothing was stored. The list clearly had
+entries here, so that's not it.
+
+**Working theory, NOT confirmed:** Best and Program may only switch while
+the changer is stopped. The owner's manual lists "Set the CD player to
+stop mode" as the preparation for playing Best Selection (p. 40) and for
+programming (p. 24), but not for Music Type or User File. That matches
+every attempt so far: Best (twice) and Program (once) were all sent while
+Playing and were ignored. Userfile was sent while Playing and worked
+anyway, and Music Type was sent while Stopped and worked. The next test
+is Stop, then Set Mode → Best.
+
+**Changed:** the "didn't take" log notice no longer claims "nothing to
+play". It now says Best/Program were ignored while playing and suggests
+pressing Stop first. Tests: `TestBestModeSession` in
+`test_mode_feature.py`, built from this log.
+
 ## Unreleased -- Kenwood's owner's manual as a local reference
 
 `protocol_reference/KENWOOD_CD-425M_instruction_manual.pdf`, supplied by
@@ -9,9 +125,9 @@ protocol. The findings relevant to this app are in README's new "Owner's
 manual notes" section. The main ones:
 
 - **Best mode** needs favorite tracks registered first (up to 32, via the
-  remote's BEST SELECTION button). That likely explains why
-  `ChangeMode(Best)` was silently ignored in v1.6.1's hardware session,
-  the same way Program mode was with nothing stored. Not confirmed yet.
+  remote's BEST SELECTION button). This was offered as the reason
+  `ChangeMode(Best)` was ignored in v1.6.1. **v1.6.3 disproved that**:
+  it's still ignored with a Best list stored.
 - **Title limits**: 25 characters for disc titles and user file names,
   and up to 20 track titles per disc. The app enforces neither yet. A
   real read-back already fits the 25-character figure (slot 4's disc name

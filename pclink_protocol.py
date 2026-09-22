@@ -703,19 +703,20 @@ def decode_disc_listing(data: bytes) -> dict:
 def decode_info_event(data: bytes) -> dict:
     # `userfiles` is CONFIRMED as the documented bitmask (v1.6.2): tagging
     # slot 2 as userfile #3 on the remote made it read 0x04.
-    # `num_tracks` is the docs' name for byte 5, but on real hardware
-    # (2026-09-22) it read 0x17 for slots 2, 3 and 4 -- discs with 13, 10
-    # and 12 tracks, all genre Rock (0x17, per DiscGenre). So it looks
-    # like the disc's GENRE, not its track count. Not renamed yet: every
-    # disc seen so far was Rock, so a non-Rock disc is needed to confirm.
-    slot, track, program, num_tracks, userfiles, param, mode, repeat = struct.unpack(
+    # Byte 5 is documented as `num_tracks`, but it's the current disc's
+    # GENRE -- CONFIRMED on real hardware (v1.6.5): slot 2 (Rock, 13
+    # tracks) reads 0x17 and slot 4 (Alternative Rock, 12 tracks) reads
+    # 0x03, including in plain Track Mode where no genre was selected.
+    # Always matches that slot's DiscGenre reply.
+    slot, track, program, genre, userfiles, param, mode, repeat = struct.unpack(
         "<HBBBBBBB", data[:9]
     )
     return {
         "slot": slot,
         "track": track,
         "program": program,
-        "num_tracks": num_tracks,
+        "genre": genre,
+        "genre_name": GENRES.get(genre, f"0x{genre:02X}"),
         "userfiles": userfiles,
         "userfile_names": userfile_list(userfiles),
         "param": param,

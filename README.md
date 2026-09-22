@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.6.2 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.6.6 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre, all confirmed working against
 real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Querying gnudb.org is wired up but
@@ -202,7 +202,11 @@ testing, so treat them as the manufacturer's claims until confirmed:
   hand). It isn't known yet whether a `WRITE_NAME` for track 21+ is
   rejected, ignored or accepted. The app doesn't enforce this either.
 - **Best Selection** (p. 40): a list of up to 32 favorite tracks,
-  registered while each one plays. **Programs** (p. 24): up to 32
+  registered while each one plays. Playing it lists "set the CD player
+  to stop mode" as preparation, and so does programming (p. 24). That's
+  NOT why `ChangeMode(Best)` is ignored, though: that was tested while
+  stopped too, and Best can't be set over PC-Link at all (see "Honest
+  gaps" #15). **Programs** (p. 24): up to 32
   disc/track steps, where a step with no track number means the whole
   disc ("ALL"). That matches `DiscListing`'s `0xAA` all-tracks marker in
   `pclink_protocol.py`.
@@ -575,27 +579,39 @@ exactly what's happening):
    `CHANGELOG.md`'s v1.4.1-v1.5.1 entries for the full raw-byte detail of
    all four write approaches and the v1.5.1 bug.
 
-15. **Play mode selector (`ChangeMode`) -- PARTLY confirmed against real
-   hardware (v1.6.1).** Confirmed: `ChangeMode` is ACK'd with no reply
-   data. Music Type (Rock) and Userfile #1 switch modes, and a mode change
-   made on the remote shows up in the status panel. **The changer silently
-   ignores a mode it can't enter**: Best and Program (with no program
-   stored) were ACK'd and then nothing happened, with no event and no
-   error. The app now logs a notice if no `InfoEvent` reports the new mode
-   within 5s. **The userfile `param` is a bit, not a number: CONFIRMED
-   (v1.6.2).** Slot 2 was tagged only as #3 (`userfiles=0x04`), and
-   `ChangeMode(Userfile, 0x04)` played it. Still open:
-   - **Best mode.** It probably needs something stored first, the way
-     Program does. The owner's manual describes Best Selection as a list
-     of up to 32 favorite tracks, registered one at a time with the
-     remote's BEST SELECTION button while each track plays. That would
-     explain the silent ignore, but it isn't confirmed yet: the next step
-     is to register a track and retry.
-   - **`InfoEvent`'s `param` in Music Type mode.** It read `0x00`, not the
-     selected genre, so the Mode Param row shows only the raw byte there.
-   - **`InfoEvent`'s `num_tracks` byte looks like the disc's genre.** It
-     read `0x17` (Rock) on three all-Rock discs with 13/10/12 tracks. This
-     needs a non-Rock disc to confirm before the field is renamed.
+15. **Play mode selector (`ChangeMode`) -- CONFIRMED against real
+   hardware for Track, Music Type and Userfile modes (v1.6.1-v1.6.6).**
+   - `ChangeMode` is ACK'd with no reply data, and the changer reports
+     the new mode in its next `InfoEvent`. Mode changes made on the
+     remote show up in the status panel too.
+   - **Music Type mode** was confirmed with two genres: Rock played slot
+     2 (a Rock disc) and Alternative Rock played slot 4 (an Alternative
+     Rock disc).
+   - **The userfile `param` is a bit, not a number (v1.6.2).** Slot 2 was
+     tagged only as #3 (`userfiles=0x04`), and `ChangeMode(Userfile,
+     0x04)` played it.
+   - **The changer silently ignores some mode changes**: it ACKs the
+     request and then sends nothing, with no event and no error. The app
+     logs a notice if no `InfoEvent` reports the new mode within 5s.
+   - **Best mode can't be set over PC-Link (v1.6.4).** `ChangeMode(Best)`
+     was ignored while Playing, while Stopped, and with a Best list
+     stored, even though Best started from the remote works and reports
+     `mode=4`, the same code the app sent. It's left out of the Play Mode
+     dropdown; the status panel still shows it when started from the
+     remote.
+   - **`InfoEvent`'s byte 5 is the disc's genre, not `num_tracks` as
+     documented (v1.6.5).** Slot 2 (Rock, 13 tracks) reads `0x17` and
+     slot 4 (Alternative Rock, 12 tracks) reads `0x03`, including in plain
+     Track Mode. It's decoded as `genre`/`genre_name`.
+   - **`InfoEvent`'s `param` in Music Type mode** reads `0x00`, not the
+     selected genre (seen with both Rock and Alternative Rock), so the
+     Mode Param row shows only the raw byte there.
+   - **Program mode can't be set over PC-Link either (v1.6.6).** A
+     stored program plays from the remote (`mode=3`, with the `program`
+     byte stepping 1, 2, ... through it), but the app's
+     `ChangeMode(Program)` was ignored four times, both while Playing and
+     while Stopped. Like Best, it's left out of the dropdown, so the
+     dropdown offers only Track, Music Type and Userfile modes.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

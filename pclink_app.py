@@ -118,7 +118,19 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # the same byte either way).
 # v1.6.2 -- userfile param encoding CONFIRMED as a bit (#3 -> 0x04) on
 # real hardware. No code change; docs/tests only.
-APP_VERSION = "1.6.2"
+# v1.6.3 -- Best mode is ignored by ChangeMode even with a Best list
+# stored (remote-started Best played fine), so "nothing to play" isn't
+# the reason. Reworded the didn't-take notice; working theory (from the
+# owner's manual) is that Best/Program only switch while stopped.
+# v1.6.4 -- stop theory disproved: Best was ignored while Stopped too.
+# Best is now left out of the Play Mode dropdown (CHANGE_MODE_UNSUPPORTED).
+# v1.6.5 -- InfoEvent's documented `num_tracks` byte CONFIRMED to be the
+# disc's genre (non-Rock disc read 0x03 = Alternative Rock); decoded as
+# `genre` now. Music Type mode confirmed with two genres.
+# v1.6.6 -- Program mode CONFIRMED not settable via ChangeMode either (a
+# stored program plays from the remote, but 4 app requests -- playing and
+# stopped -- were all ignored). Left out of the dropdown like Best.
+APP_VERSION = "1.6.6"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -237,6 +249,22 @@ def merge_genre_into_write_items(
 
 
 MODE_NAME_TO_CODE = {name: code for code, name in proto.MODE_NAMES.items()}
+
+# Modes the changer won't switch to via ChangeMode, so the Play Mode
+# dropdown leaves them out. Both CONFIRMED on real hardware: every request
+# was ACK'd then ignored -- while playing, while stopped, and with a list
+# stored -- although starting the same mode from the remote works and
+# reports the same mode code we send.
+#   Best (v1.6.4): remote-started Best reports mode=4.
+#   Program (v1.6.6): remote-started program reports mode=3, with the
+#   InfoEvent `program` byte stepping 1, 2, ... through the program.
+CHANGE_MODE_UNSUPPORTED = frozenset({proto.Mode.BEST, proto.Mode.PROGRAM})
+
+
+def change_mode_choices() -> list[str]:
+    """Mode names offered in the Control tab's Play Mode dropdown."""
+    return [proto.MODE_NAMES[code] for code in sorted(proto.MODE_NAMES)
+            if code not in CHANGE_MODE_UNSUPPORTED]
 
 
 def build_change_mode_request(mode_name: str, genre_name: str, userfile_number: int) -> tuple[bytes, str]:
@@ -366,9 +394,10 @@ class App(tk.Tk):
 
         # Mode code from the last "Set Mode" click, until an InfoEvent
         # reports it. Confirmed on real hardware: the changer ACKs a
-        # ChangeMode it can't honor (e.g. Program mode with no program
-        # stored) and then just sends nothing -- no InfoEvent, no error --
-        # so the only way to notice is that the mode never shows up.
+        # ChangeMode it won't honor (Best and Program, always -- see
+        # CHANGE_MODE_UNSUPPORTED) and then just sends nothing -- no
+        # InfoEvent, no error -- so the only way to notice is that the mode
+        # never shows up. Kept as a safety net for anything else it ignores.
         self._pending_mode: int | None = None
 
         self._build_ui()
@@ -493,7 +522,7 @@ class App(tk.Tk):
         self.mode_var = tk.StringVar(value=proto.MODE_NAMES[proto.Mode.TRACK])
         mode_combo = ttk.Combobox(
             mode_frame, textvariable=self.mode_var, state="readonly", width=28,
-            values=[proto.MODE_NAMES[code] for code in sorted(proto.MODE_NAMES)],
+            values=change_mode_choices(),
         )
         mode_combo.grid(row=0, column=1, columnspan=3, sticky="w", padx=4)
         mode_combo.bind("<<ComboboxSelected>>", lambda e: self._update_mode_param_widgets())
@@ -1814,9 +1843,7 @@ class App(tk.Tk):
         self._pending_mode = None
         self._log(
             f"{proto.MODE_NAMES[mode]} didn't take -- the changer accepted the "
-            f"command but never reported the new mode. It does this when a "
-            f"mode has nothing to play (seen with Program mode and no program "
-            f"stored)."
+            f"command but never reported the new mode."
         )
 
     def _get_disc_info(self):
