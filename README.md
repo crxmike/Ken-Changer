@@ -184,6 +184,43 @@ worth knowing:
   small picker window lists them for you to choose from before the full
   entry is fetched.
 
+## Owner's manual notes
+
+`protocol_reference/KENWOOD_CD-425M_instruction_manual.pdf` is Kenwood's
+own manual for the CD-4700M/CD-4260M/CD-425M/DPF-J6030. It's gitignored
+and not included in this repo, since it's Kenwood's copyrighted manual.
+If you have your own copy, drop it at that path. It doesn't cover
+the serial protocol, but it states several limits and behaviors that
+matter to this app. These come from the manual, not from hardware
+testing, so treat them as the manufacturer's claims until confirmed:
+
+- **Title length: 25 characters for a disc title** (p. 28) **and for a
+  user file name** (p. 35). A real read-back already fits this: slot 4's
+  disc name came back as exactly 25 characters (`'The Hip / Trouble at
+  the '`). The Disc Data tab doesn't enforce this limit yet.
+- **Up to 20 track titles per disc** (p. 28, for titles entered by
+  hand). It isn't known yet whether a `WRITE_NAME` for track 21+ is
+  rejected, ignored or accepted. The app doesn't enforce this either.
+- **Best Selection** (p. 40): a list of up to 32 favorite tracks,
+  registered while each one plays. **Programs** (p. 24): up to 32
+  disc/track steps, where a step with no track number means the whole
+  disc ("ALL"). That matches `DiscListing`'s `0xAA` all-tracks marker in
+  `pclink_protocol.py`.
+- **User files** (p. 33-36): 8 of them, a disc can be in several, and
+  each can be given a name (read back via `InfoType.USERFILE_NAMES`, not
+  yet used). Music Type and User File play go through their discs in
+  increasing slot order.
+- **Stored data is keyed to the disc, not the slot** (p. 27): the changer
+  keeps titles, music types and user files for up to 210 discs by each
+  CD's own ID, so a disc keeps its data when moved to another slot.
+- **The front-panel menu lists 26 music types** (p. 31), while
+  `proto.GENRES` has 29 codes: it adds Unassigned, Unknown and Erotic,
+  which the manual's list leaves out.
+- **ALL DATA READ** (p. 18) is under the remote's MODE menu. **Resetting
+  all registered data** (titles, music types, user files, Best
+  Selection; p. 41) means holding Stop while plugging the power back in.
+  Memory backup lasts at least 3 weeks unplugged (p. 42).
+
 ## Not yet implemented
 
 - **Writing program/userfiles to the changer.** `Action.WRITE_NAME`
@@ -215,6 +252,10 @@ worth knowing:
   directions (since the changer can initiate a transaction at any time to
   push an event, not just reply to requests).
 - `pclink_app.py` -- the Tkinter GUI tying the above together.
+- `protocol_reference/` -- saved copies of the community protocol
+  documentation this app was built from. Kenwood's own owner's manual
+  (`KENWOOD_CD-425M_instruction_manual.pdf`) can sit there too, but it's
+  gitignored and not committed; see "Owner's manual notes" above.
 - `gnudb_client.py` -- minimal HTTP client for gnudb.org's CDDB-compatible
   query/read protocol (stdlib `urllib` only, no serial or Tkinter
   dependency; independently testable, and tested against gnudb.org's own
@@ -544,8 +585,12 @@ exactly what's happening):
    within 5s. **The userfile `param` is a bit, not a number: CONFIRMED
    (v1.6.2).** Slot 2 was tagged only as #3 (`userfiles=0x04`), and
    `ChangeMode(Userfile, 0x04)` played it. Still open:
-   - **Best mode.** Does it need something stored first, the way Program
-     does?
+   - **Best mode.** It probably needs something stored first, the way
+     Program does. The owner's manual describes Best Selection as a list
+     of up to 32 favorite tracks, registered one at a time with the
+     remote's BEST SELECTION button while each track plays. That would
+     explain the silent ignore, but it isn't confirmed yet: the next step
+     is to register a track and retry.
    - **`InfoEvent`'s `param` in Music Type mode.** It read `0x00`, not the
      selected genre, so the Mode Param row shows only the raw byte there.
    - **`InfoEvent`'s `num_tracks` byte looks like the disc's genre.** It

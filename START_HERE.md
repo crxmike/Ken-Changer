@@ -61,8 +61,11 @@ The userfile param is CONFIRMED as a bit (#3 -> `0x04`, v1.6.2). See
 ## In progress / next up
 
 - **Play Mode selector leftovers.** Play a non-Rock disc to check
-  whether `InfoEvent`'s `num_tracks` byte is really the disc's genre,
-  and find out whether Best mode needs something stored first.
+  whether `InfoEvent`'s `num_tracks` byte is really the disc's genre.
+  Best mode almost certainly needs tracks registered first (the owner's
+  manual describes it as a list of up to 32 favorite tracks, added one
+  at a time with the BEST SELECTION button while each track plays).
+  Register one and retry Set Mode to confirm.
 - **`WRITE_PROGRAM` / `SET_USERFILES`** share `send_write()`'s plumbing
   with the now-confirmed `WRITE_NAME` path but have no UI yet, and their
   encoders are untested against real hardware beyond round-trip
@@ -117,6 +120,12 @@ The userfile param is CONFIRMED as a bit (#3 -> `0x04`, v1.6.2). See
   requests the data via `ReadyForData` before accepting a write, or the PC
   just sends it) -- that'll need figuring out against real hardware either
   way, same as everything else so far.
+  Also in there, locally only (gitignored, not committed, because it's
+  Kenwood's copyrighted manual): `KENWOOD_CD-425M_instruction_manual.pdf`,
+  Kenwood's own owner's manual. It says nothing about the serial protocol, but it's the
+  reference for what each front-panel/remote feature does (play modes,
+  Best Selection, programs, user files, title length limits, ALL DATA
+  READ) -- see README's "Owner's manual notes".
 - `README.md` -- full documentation, setup, protocol summary, and an
   "Honest gaps" section listing every place where behavior was inferred
   vs. confirmed against real hardware.

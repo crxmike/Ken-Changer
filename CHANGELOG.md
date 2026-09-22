@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased -- Kenwood's owner's manual as a local reference
+
+`protocol_reference/KENWOOD_CD-425M_instruction_manual.pdf`, supplied by
+the user. It's gitignored rather than committed, since it's Kenwood's
+copyrighted manual. It documents front-panel/remote behavior, not the serial
+protocol. The findings relevant to this app are in README's new "Owner's
+manual notes" section. The main ones:
+
+- **Best mode** needs favorite tracks registered first (up to 32, via the
+  remote's BEST SELECTION button). That likely explains why
+  `ChangeMode(Best)` was silently ignored in v1.6.1's hardware session,
+  the same way Program mode was with nothing stored. Not confirmed yet.
+- **Title limits**: 25 characters for disc titles and user file names,
+  and up to 20 track titles per disc. The app enforces neither yet. A
+  real read-back already fits the 25-character figure (slot 4's disc name
+  came back as exactly 25 characters).
+
+No code changed.
+
 ## v1.6.2 -- Userfile param encoding CONFIRMED: it's a bit, not a number
 
 The user ran the test v1.6.1 asked for, on a real CD-425M (2026-09-22,

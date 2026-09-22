@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 kenwood-pclink.zip
+
+# Kenwood owner's manual: kept locally for reference, not committed (copyright)
+protocol_reference/*.pdf

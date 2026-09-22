@@ -63,6 +63,14 @@ feature.
   specify the write-side choreography (e.g. whether the changer requests
   data via `ReadyForData` before accepting a write, or the PC just sends
   it), so that'll need figuring out against real hardware regardless.
+- `protocol_reference/KENWOOD_CD-425M_instruction_manual.pdf` -- Kenwood's
+  own owner's manual (covers CD-4700M/CD-4260M/CD-425M/DPF-J6030).
+  Gitignored and not committed, since it's Kenwood's copyrighted manual,
+  so it only exists in the user's local copy. README's "Owner's manual
+  notes" summarizes what matters if it's missing. It doesn't document the serial protocol, but it's the authority on what
+  the changer's features *do* from the front panel/remote: play modes,
+  Best Selection, programs, user files, title limits and ALL DATA READ.
+  Check it before guessing at user-visible behavior.
 
 ## Working style
 
