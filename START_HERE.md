@@ -62,8 +62,17 @@ those. So the dropdown offers only Track, Music Type and Userfile.
 The userfile param is CONFIRMED as a bit (#3 -> `0x04`, v1.6.2). See
 `CHANGELOG.md`'s v1.6.1/v1.6.2 entries and README "Honest gaps" #15.
 
+**v1.7.0/v1.7.1** -- a read-only "Userfiles & Program" tab (userfile
+names + which discs are in each, and the stored program). **CONFIRMED
+on real hardware**; userfile names turned out to be keyed by userfile
+bit, not number (fixed in v1.7.1). See `CHANGELOG.md` and README
+"Honest gaps" #16.
+
 ## In progress / next up
 
+- **Writing userfiles and programs** (`SET_USERFILES` /
+  `WRITE_PROGRAM`) is the natural next step, now that reading both is
+  confirmed and their exact shapes are known.
 - **`WRITE_PROGRAM` / `SET_USERFILES`** share `send_write()`'s plumbing
   with the now-confirmed `WRITE_NAME` path but have no UI yet, and their
   encoders are untested against real hardware beyond round-trip
@@ -99,6 +108,8 @@ The userfile param is CONFIRMED as a bit (#3 -> `0x04`, v1.6.2). See
   (names, confirmed; genre/program/userfiles encoders, round-trip only).
 - `test_mode_feature.py` -- tests for the v1.6.0 Play Mode selector
   (`ChangeMode`); not yet confirmed on real hardware.
+- `test_userfile_program_view.py` -- tests for the read-only Userfiles
+  & Program tab; confirmed on real hardware (v1.7.1).
 - `test_genre_feature.py` -- tests for the genre read/write feature;
   confirmed against real hardware as of v1.5.0 (writes fold into a
   `WRITE_NAME` write rather than a standalone action), including a

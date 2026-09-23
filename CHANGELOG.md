@@ -1,5 +1,73 @@
 # Changelog
 
+## v1.7.1 -- Userfiles & Program tab CONFIRMED on real hardware; userfile-name lookup fixed
+
+The user tested v1.7.0 on a real CD-425M (2026-09-22, raw-byte log) and
+reported it working as expected. All three reads work:
+
+- **Read Program** (`02 03 07 00 00 20 00 00 00 00 00 d6`, slot 0)
+  returned one `DiscListing` frame with 11 steps, all on slot 1: tracks
+  1, 1, 2, 5, 8, 4, 2, 5, 3, 6, 9. The shape matches
+  `cd_disclisting.html` exactly (length byte, then 3-byte slot/track
+  items), and nothing was truncated.
+- **Read Userfiles for Known Discs**, after a full Disc Map scan (3
+  discs), returned one `DiscUserfiles` frame per slot: slot 1 = `0x00`,
+  slot 2 = `0x04` (#3), slot 3 = `0x01` (#1). That matches what
+  `InfoEvent`/`TextData` had already reported.
+- **Read Userfile Names** (slot 0, `info_type` 7) returned **eight
+  `TextData` frames whose `index` was 1, 2, 4, 8, 16, 32, 64, 128**. That
+  means the index is the userfile's *bit*, not its number. #1 = "fUCK
+  sHIT", #2 = "BALLS FART", and the unnamed ones were a lone `0x01`,
+  already filtered as placeholders (v1.6.7).
+
+**Bug fixed:** v1.7.0 looked names up assuming index n = userfile #n.
+That's the same thing for #1 and #2 (bits 1 and 2), so this session's
+table looked right by coincidence, but a name on #3 (index 4) would have
+shown on row #4, and names on #5-#8 would never have shown at all.
+`userfile_rows()` now looks each name up by the userfile's bit. Tests:
+`TestRealSession` in `test_userfile_program_view.py`, built from the
+logged frames, including one that covers the #3 case.
+
+**Noticed during the Disc Map scan, not acted on:** slots 100-102 (empty,
+`track_count` 0) came back with `DiscInfo` `format = 0x90` instead of
+`0x00`. That doesn't affect occupancy (which keys off `track_count`), and
+its meaning is unknown.
+
+## v1.7.0 -- Read-only "Userfiles & Program" tab (NOT yet tried on real hardware)
+
+A new tab showing what's stored in the changer, without changing
+anything:
+
+- **Userfiles table**: one row per userfile #1-#8, with its name and the
+  discs in it.
+  - *Membership* uses the userfile bitmask that's already CONFIRMED
+    (v1.6.2: bit n-1 = userfile #n). It's collected from every reply
+    that carries one (`InfoEvent`, disc/track `TextData`, and new
+    `DiscUserfiles` replies), so it fills in as discs are browsed. The
+    **"Read Userfiles for Known Discs"** button sends
+    `DataAccess(RETRIEVE, DiscUserfiles, slot)` for each slot known to
+    hold a disc (occupied on the Disc Map, or with a disc name read),
+    one at a time with the usual collision retry.
+  - *Names* come from **"Read Userfile Names"**:
+    `DataAccess(RETRIEVE, TextData, slot=0, info_type=7)`. Replies are
+    cached by their raw `index`, and the table assumes index n =
+    userfile #n. **Unconfirmed**: it could be 0-based, and the log shows
+    the raw index of every name received.
+- **Program table**: **"Read Program"** sends `DataAccess(RETRIEVE,
+  DiscListing, slot=0)` and shows each step's disc and track, with names
+  where known. A track of `0xAA` shows as "All tracks".
+  **Unconfirmed**: whether slot 0 is right (a program spans discs),
+  whether the reply is the program or something else (such as the Best
+  list), and its exact shape.
+
+Supporting changes: `decode_disc_listing` now tolerates a frame shorter
+than its own `length` byte (it stops at the last complete item and flags
+`truncated`) instead of raising on the IO thread.
+`LISTING_ALL_TRACKS = 0xAA`. The new pure helpers `userfile_rows()` and
+`program_rows()` in `pclink_app.py` are what the tables display. All of
+this is cleared on disconnect like the other changer-sourced caches.
+Tests: `test_userfile_program_view.py`.
+
 ## v1.6.7 -- Random modes can't be set via ChangeMode; the Random button reaches them
 
 The user tried every random variant from the Play Mode dropdown on a real

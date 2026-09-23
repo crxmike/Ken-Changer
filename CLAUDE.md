@@ -53,6 +53,8 @@ feature.
   (v1.4.0).
 - `test_mode_feature.py` -- tests for the Play Mode selector
   (`ChangeMode`, v1.6.0).
+- `test_userfile_program_view.py` -- tests for the read-only Userfiles &
+  Program tab (v1.7.0).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

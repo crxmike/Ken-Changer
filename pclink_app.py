@@ -135,7 +135,12 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # Type / Userfile only, with an on-screen hint. Placeholder track titles
 # (text that's only control characters, e.g. '\x01') are no longer cached
 # as names.
-APP_VERSION = "1.6.7"
+# v1.7.0 -- read-only "Userfiles & Program" tab: userfile names + which
+# discs are in each userfile, and the stored program (DiscListing). NOT
+# yet tried against real hardware.
+# v1.7.1 -- confirmed on real hardware; fixed userfile names being looked
+# up by userfile number when the changer keys them by userfile BIT.
+APP_VERSION = "1.7.1"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -310,6 +315,46 @@ def build_change_mode_request(mode_name: str, genre_name: str, userfile_number: 
     return proto.encode_change_mode(mode, param), f"ChangeMode({mode_name}{detail}, param=0x{param:02X})"
 
 
+USERFILE_COUNT = 8
+
+
+def _disc_label(slot: int, disc_names: dict) -> str:
+    name = disc_names.get(slot)
+    return f"{slot} ({name})" if name else str(slot)
+
+
+def userfile_rows(userfiles_by_slot: dict, names_by_index: dict, disc_names: dict) -> list[tuple]:
+    """Rows for the Userfiles & Program tab's userfile table: one per
+    userfile #1..#8 -> (number, name, discs). Membership comes from each
+    slot's userfile bitmask (bit n-1 = userfile #n, CONFIRMED v1.6.2).
+    Names are keyed by the same BIT, not the userfile number: CONFIRMED on
+    real hardware (v1.7.1) -- a userfile-names read returned indexes 1, 2,
+    4, 8, 16, 32, 64, 128, so userfile #3's name is index 4."""
+    rows = []
+    for n in range(1, USERFILE_COUNT + 1):
+        bit = 1 << (n - 1)
+        slots = sorted(s for s, mask in userfiles_by_slot.items() if mask & bit)
+        discs = ", ".join(_disc_label(s, disc_names) for s in slots) or "-"
+        rows.append((f"#{n}", names_by_index.get(bit) or "-", discs))
+    return rows
+
+
+def program_rows(items: list, disc_names: dict, track_names: dict) -> list[tuple]:
+    """Rows for the program table: (step, disc, track) from decoded
+    DiscListing items. A track of 0xAA means the whole disc, per
+    cd_disclisting.html (the owner's manual's "ALL", p. 24)."""
+    rows = []
+    for step, item in enumerate(items, start=1):
+        slot, track = item["slot"], item["track"]
+        if item.get("all_tracks"):
+            track_text = "All tracks"
+        else:
+            name = track_names.get(slot, {}).get(track)
+            track_text = f"{track} ({name})" if name else str(track)
+        rows.append((step, _disc_label(slot, disc_names), track_text))
+    return rows
+
+
 class ScrollableFrame(ttk.Frame):
     """A vertically-scrollable container. Put widgets in `.inner` (an
     ordinary ttk.Frame) the same way you would in any other frame; this
@@ -408,6 +453,15 @@ class App(tk.Tk):
         self._disc_map_stop = threading.Event()
         self._disc_map_scanning = False
 
+        # Userfiles & Program tab (v1.7.0, read-only). Changer-sourced, so
+        # cleared on disconnect. Userfile membership (slot -> bitmask) is
+        # collected from every InfoEvent / TextData / DiscUserfiles reply
+        # that carries one, not just from explicit reads.
+        self._userfiles_cache: dict[int, int] = {}
+        self._userfile_name_cache: dict[int, str] = {}  # TextData index (userfile BIT) -> name
+        self._program_items: list | None = None  # decoded DiscListing items, None = not read yet
+        self._userfile_scan_running = False
+
         # Mode code from the last "Set Mode" click, until an InfoEvent
         # reports it. Confirmed on real hardware: the changer ACKs a
         # ChangeMode it won't honor (Best and Program, always -- see
@@ -456,6 +510,9 @@ class App(tk.Tk):
 
         disc_map_tab = ttk.Frame(notebook, padding=4)
         notebook.add(disc_map_tab, text="Disc Map")
+
+        uf_prog_tab = ttk.Frame(notebook, padding=4)
+        notebook.add(uf_prog_tab, text="Userfiles & Program")
 
         control_tab.columnconfigure(0, weight=1)
         control_tab.columnconfigure(1, weight=1)
@@ -785,6 +842,45 @@ class App(tk.Tk):
             )
             self._disc_map_cells[slot] = rect
 
+        # -- Userfiles & Program tab (read-only, v1.7.0) ---------------------
+        ttk.Label(
+            uf_prog_tab, foreground="gray",
+            text="Read-only view of what's stored in the changer.",
+        ).pack(anchor="w")
+
+        uf_frame = ttk.LabelFrame(uf_prog_tab, text="Userfiles", padding=8)
+        uf_frame.pack(fill="both", expand=True, pady=4)
+        uf_toolbar = ttk.Frame(uf_frame)
+        uf_toolbar.pack(fill="x")
+        ttk.Button(uf_toolbar, text="Read Userfile Names",
+                   command=self._read_userfile_names).pack(side="left", padx=2)
+        self.uf_scan_btn = ttk.Button(uf_toolbar, text="Read Userfiles for Known Discs",
+                                      command=self._read_userfiles_for_known_discs)
+        self.uf_scan_btn.pack(side="left", padx=2)
+        self.uf_progress_label = ttk.Label(uf_toolbar, text="")
+        self.uf_progress_label.pack(side="left", padx=8)
+        self.uf_tree = ttk.Treeview(uf_frame, columns=("uf", "name", "discs"),
+                                    show="headings", height=8)
+        for col, text, width in (("uf", "Userfile", 70), ("name", "Name", 180), ("discs", "Discs", 480)):
+            self.uf_tree.heading(col, text=text)
+            self.uf_tree.column(col, width=width, anchor="w", stretch=(col == "discs"))
+        self.uf_tree.pack(fill="both", expand=True, pady=(4, 0))
+
+        prog_frame = ttk.LabelFrame(uf_prog_tab, text="Program", padding=8)
+        prog_frame.pack(fill="both", expand=True, pady=4)
+        prog_toolbar = ttk.Frame(prog_frame)
+        prog_toolbar.pack(fill="x")
+        ttk.Button(prog_toolbar, text="Read Program", command=self._read_program).pack(side="left", padx=2)
+        self.prog_summary_label = ttk.Label(prog_toolbar, text="Not read yet.")
+        self.prog_summary_label.pack(side="left", padx=8)
+        self.prog_tree = ttk.Treeview(prog_frame, columns=("step", "disc", "track"),
+                                      show="headings", height=8)
+        for col, text, width in (("step", "Step", 60), ("disc", "Disc", 300), ("track", "Track", 300)):
+            self.prog_tree.heading(col, text=text)
+            self.prog_tree.column(col, width=width, anchor="w", stretch=(col != "step"))
+        self.prog_tree.pack(fill="both", expand=True, pady=(4, 0))
+        self._refresh_userfiles_view()
+
         # -- Log console (outside the notebook -- visible on every tab) ---------
         log_frame = ttk.LabelFrame(body, text="Log", padding=4)
         log_frame.pack(fill="both", expand=False, pady=(4, 0))
@@ -906,6 +1002,12 @@ class App(tk.Tk):
         self._disc_data_slot = None
         self.disc_data_summary.configure(text="No current disc known yet.")
         self._reset_disc_map()
+        self._userfiles_cache.clear()
+        self._userfile_name_cache.clear()
+        self._program_items = None
+        self.uf_progress_label.configure(text="")
+        self._refresh_userfiles_view()
+        self._refresh_program_view()
         self.conn_status.configure(text="Disconnected", foreground="red")
         self.connect_btn.configure(text="Connect")
 
@@ -953,6 +1055,7 @@ class App(tk.Tk):
                 self._pending_mode = None
             self._set_status("Repeat", "On" if p.get("repeat") else "Off")
             self._set_status("Userfiles", ", ".join(p.get("userfile_names", [])) or "-")
+            self._note_userfiles(p.get("slot"), p.get("userfiles"))
             self._note_current_position(p.get("slot"), p.get("track"))
 
         elif frame.command == proto.CMD_DISC_EVENT:
@@ -992,6 +1095,25 @@ class App(tk.Tk):
             p = frame.payload
             self._log(f"DiscGenre: slot={p.get('slot')} genre={p.get('genre_name')}")
             self._cache_genre(p)
+
+        elif frame.command == proto.CMD_DISC_USERFILES:
+            p = frame.payload
+            self._log(
+                f"DiscUserfiles: slot={p.get('slot')} "
+                f"userfiles=0x{p.get('userfiles', 0):02X} {p.get('userfile_names')}"
+            )
+            self._note_userfiles(p.get("slot"), p.get("userfiles"))
+
+        elif frame.command == proto.CMD_DISC_LISTING:
+            p = frame.payload
+            self._log(
+                f"DiscListing: {p.get('length')} item(s)"
+                f"{' (TRUNCATED frame)' if p.get('truncated') else ''}: "
+                + ", ".join(f"slot {i['slot']}/track {'ALL' if i['all_tracks'] else i['track']}"
+                            for i in p.get("items", []))
+            )
+            self._program_items = p.get("items", [])
+            self.ui_queue.put(self._refresh_program_view)
 
         elif frame.command in (proto.CMD_TEXT_DATA, proto.CMD_LONG_TEXT_DATA):
             p = frame.payload
@@ -1035,6 +1157,21 @@ class App(tk.Tk):
         if proto.is_placeholder_text(text):
             text = ""
 
+        if info_type == proto.InfoType.USERFILE_NAMES:
+            index = text_payload.get("index", text_payload.get("track"))
+            if index is not None:
+                if text:
+                    self._userfile_name_cache[index] = text
+                else:
+                    self._userfile_name_cache.pop(index, None)
+                self.ui_queue.put(self._refresh_userfiles_view)
+            return
+
+        if info_type in (proto.InfoType.DISC_NAMES, proto.InfoType.TRACK_NAMES):
+            # Every disc/track TextData reply also carries the disc's
+            # userfile bitmask -- free membership data for the Userfiles view.
+            self._note_userfiles(slot, text_payload.get("userfiles"))
+
         if info_type == proto.InfoType.DISC_NAMES:
             self._disc_name_cache[slot] = text
         elif info_type == proto.InfoType.TRACK_NAMES:
@@ -1058,6 +1195,16 @@ class App(tk.Tk):
         self._update_name_labels()
         if slot == self._current_slot:
             self._refresh_disc_data_from_changer()
+
+    def _note_userfiles(self, slot, userfiles):
+        """Record a slot's userfile bitmask from any reply that carries one.
+        Safe to call from the IO thread; the view refreshes via ui_queue."""
+        if slot is None or userfiles is None:
+            return
+        if self._userfiles_cache.get(slot) != userfiles:
+            self._userfiles_cache[slot] = userfiles
+            if hasattr(self, "uf_tree"):
+                self.ui_queue.put(self._refresh_userfiles_view)
 
     def _update_name_labels(self):
         slot, track = self._current_slot, self._current_track
@@ -2042,6 +2189,108 @@ class App(tk.Tk):
             return
         color = self.DISC_MAP_COLOR_OCCUPIED if occupied else self.DISC_MAP_COLOR_EMPTY
         self.disc_map_canvas.itemconfig(rect, fill=color)
+
+    # ------------------------------------------------------------------
+    # Userfiles & Program tab (read-only, v1.7.0)
+    # ------------------------------------------------------------------
+
+    def _refresh_userfiles_view(self):
+        self.uf_tree.delete(*self.uf_tree.get_children())
+        for row in userfile_rows(self._userfiles_cache, self._userfile_name_cache,
+                                 self._disc_name_cache):
+            self.uf_tree.insert("", "end", values=row)
+
+    def _refresh_program_view(self):
+        self.prog_tree.delete(*self.prog_tree.get_children())
+        if self._program_items is None:
+            self.prog_summary_label.configure(text="Not read yet.")
+            return
+        rows = program_rows(self._program_items, self._disc_name_cache, self._track_name_cache)
+        for row in rows:
+            self.prog_tree.insert("", "end", values=row)
+        self.prog_summary_label.configure(
+            text=f"{len(rows)} step(s)." if rows else "No program stored."
+        )
+
+    def _read_userfile_names(self):
+        # slot=0 -- CONFIRMED (v1.7.1): returns all 8 names, one TextData
+        # per userfile, indexed by userfile bit; unnamed ones are '\x01'.
+        self._send_bg(
+            proto.CMD_DATA_ACCESS,
+            proto.encode_data_access(
+                proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA, slot=0,
+                info_type=proto.InfoType.USERFILE_NAMES,
+            ),
+            "DataAccess(UserfileNames)",
+        )
+
+    def _read_program(self):
+        # slot=0 -- CONFIRMED (v1.7.1): returns the stored program as one
+        # DiscListing frame.
+        self._send_bg(
+            proto.CMD_DATA_ACCESS,
+            proto.encode_data_access(proto.Action.RETRIEVE_DATA, proto.DataType.DISC_LISTING, slot=0),
+            "DataAccess(DiscListing / program)",
+        )
+
+    def _known_disc_slots(self) -> list[int]:
+        """Slots the app knows hold a disc this session: occupied on the
+        Disc Map, or with a disc name read back."""
+        known = {s for s, occupied in self._disc_occupancy.items() if occupied}
+        known |= set(self._disc_name_cache)
+        return sorted(known)
+
+    def _read_userfiles_for_known_discs(self):
+        link = self._require_link()
+        if link is None or self._userfile_scan_running:
+            return
+        slots = self._known_disc_slots()
+        if not slots:
+            messagebox.showinfo(
+                "No discs known yet",
+                "The app doesn't know which slots hold discs yet. Run "
+                "\"Scan All 200 Slots\" on the Disc Map tab first.",
+            )
+            return
+        self._userfile_scan_running = True
+        self.uf_scan_btn.configure(state="disabled")
+        threading.Thread(target=self._userfile_scan_worker, args=(link, slots), daemon=True).start()
+
+    def _userfile_scan_worker(self, link: PCLinkConnection, slots: list[int]):
+        """One DataAccess(DiscUserfiles) per known slot, sent one at a time
+        with the same collision retry as the Disc Map scan."""
+        for i, slot in enumerate(slots, start=1):
+            self.ui_queue.put(
+                lambda i=i, s=slot: self.uf_progress_label.configure(
+                    text=f"Reading slot {s} ({i}/{len(slots)})..."
+                )
+            )
+            attempt = 0
+            while True:
+                try:
+                    link.send(
+                        proto.CMD_DATA_ACCESS,
+                        proto.encode_data_access(
+                            proto.Action.RETRIEVE_DATA, proto.DataType.DISC_USERFILES, slot=slot
+                        ),
+                    )
+                    break
+                except PCLinkTimeout:
+                    attempt += 1
+                    if attempt > 2:
+                        self._log(f"Userfiles read: slot {slot} timed out -- skipped.")
+                        break
+                    time.sleep(0.1)
+                except PCLinkError as exc:
+                    self._log(f"Userfiles read: slot {slot} error: {exc} -- skipped.")
+                    break
+        self.ui_queue.put(self._on_userfile_scan_done)
+
+    def _on_userfile_scan_done(self):
+        self._userfile_scan_running = False
+        self.uf_scan_btn.configure(state="normal")
+        self.uf_progress_label.configure(text="Done.")
+        self._refresh_userfiles_view()
 
     def _reset_disc_map(self):
         """Changer-sourced state, so cleared on disconnect like the other

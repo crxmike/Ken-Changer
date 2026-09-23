@@ -704,15 +704,27 @@ def decode_ready_for_data(data: bytes) -> dict:
     return {"raw": data.hex(" ")}
 
 
+LISTING_ALL_TRACKS = 0xAA  # slot_track.track value meaning "whole disc"
+
+
 def decode_disc_listing(data: bytes) -> dict:
+    """Per cd_disclisting.html: byte length, then `length` slot_track
+    items (short slot, byte track). Tolerant of a frame that's shorter
+    than `length` says -- stops at the last complete item and reports
+    `truncated` -- since this reply hasn't been seen on real hardware yet
+    and a bad decode shouldn't kill the IO thread."""
+    if not data:
+        return {"length": 0, "items": [], "truncated": False}
     length = data[0]
     items = []
     offset = 1
     for _ in range(length):
+        if offset + 3 > len(data):
+            break
         slot, track = struct.unpack("<HB", data[offset : offset + 3])
-        items.append({"slot": slot, "track": track, "all_tracks": track == 0xAA})
+        items.append({"slot": slot, "track": track, "all_tracks": track == LISTING_ALL_TRACKS})
         offset += 3
-    return {"length": length, "items": items}
+    return {"length": length, "items": items, "truncated": len(items) < length}
 
 
 def decode_info_event(data: bytes) -> dict:

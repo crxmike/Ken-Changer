@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.6.7 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.7.1 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre, all confirmed working against
 real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Querying gnudb.org is wired up but
@@ -130,6 +130,12 @@ python pclink_app.py
   changer's own front-panel/remote menu; there is no way to trigger or
   detect this over the serial connection, so the Disc Map tab shows a
   standing note about it rather than trying to catch it automatically.
+- **Userfiles & Program tab** (v1.7.1, read-only, **confirmed on real
+  hardware**): a table of userfiles #1-#8 with each one's
+  name and the discs in it, plus the stored program (step, disc, track).
+  Disc membership fills in automatically from normal traffic.
+  "Read Userfiles for Known Discs", "Read Userfile Names" and "Read
+  Program" fetch the rest. See "Honest gaps" #16.
 - **Log console** with a "show raw bytes" toggle, so you can see the actual
   ENQ/ACK/STX/EOT byte exchange -- useful both for troubleshooting your
   specific unit and for extending the app later.
@@ -625,6 +631,17 @@ exactly what's happening):
      byte stepping 1, 2, ... through it), but the app's
      `ChangeMode(Program)` was ignored four times, both while Playing and
      while Stopped. Like Best, it's left out of the dropdown.
+
+16. **Userfiles & Program tab -- CONFIRMED against real hardware
+   (v1.7.1).**
+   - **Program**: `DataAccess(DiscListing)` with `slot=0` returns the
+     stored program as one `DiscListing` frame, shaped as documented.
+   - **Userfile names**: `TextData` with `info_type=7` and `slot=0`
+     returns all eight, **indexed by the userfile's bit** (1, 2, 4 ...
+     128), not its number. Unnamed userfiles come back as a lone `0x01`.
+     (v1.7.0 assumed index = number; fixed in v1.7.1.)
+   - **`DiscUserfiles`**: one frame per requested slot, matching the
+     membership `InfoEvent`/`TextData` already carry.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

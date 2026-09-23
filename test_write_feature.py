@@ -704,6 +704,7 @@ class TestPlaceholderTrackTitles(unittest.TestCase):
         return types.SimpleNamespace(
             _disc_name_cache={}, _track_name_cache={}, _current_slot=None,
             _update_name_labels=lambda: None, _refresh_disc_data_from_changer=lambda: None,
+            _note_userfiles=lambda slot, userfiles: None,
         )
 
     def test_is_placeholder_text(self):
