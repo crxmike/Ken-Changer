@@ -68,20 +68,20 @@ on real hardware**; userfile names turned out to be keyed by userfile
 bit, not number (fixed in v1.7.1). See `CHANGELOG.md` and README
 "Honest gaps" #16.
 
+**v1.8.0-v1.8.2** -- writing on the Userfiles & Program tab: rename a
+userfile, set which userfiles a disc is in, and a program editor.
+**CONFIRMED on real hardware.** Disc membership rides in a disc-name
+`WRITE_NAME` (`TextData`'s `userfiles` byte, which the changer honors),
+following the genre precedent. Writing a program also starts it playing
+in Program mode, and leaving Program mode clears the program. See
+`CHANGELOG.md`'s v1.8.1 entry and README "Honest gaps" #17.
+
+Name writes keep a disc's userfiles too (v1.8.2, confirmed).
+
 ## In progress / next up
 
-- **Writing userfiles and programs** (`SET_USERFILES` /
-  `WRITE_PROGRAM`) is the natural next step, now that reading both is
-  confirmed and their exact shapes are known.
-- **`WRITE_PROGRAM` / `SET_USERFILES`** share `send_write()`'s plumbing
-  with the now-confirmed `WRITE_NAME` path but have no UI yet, and their
-  encoders are untested against real hardware beyond round-trip
-  self-consistency (`test_write_feature.py`). The now-confirmed genre
-  write (piggybacking on `WRITE_NAME` rather than a standalone action)
-  is a useful precedent if `WRITE_PROGRAM`/`SET_USERFILES` run into
-  similar trouble -- worth checking whether either of those also has a
-  simpler existing mechanism it could ride along with, before assuming
-  the standalone action is the right path.
+- Nothing open on userfiles/programs. Untried corner: writing an empty
+  program (to clear it).
 - **gnudb.org querying just got wired up** (query -> read -> populate the
   Disc Data tab's "From gnudb.org" column) but hasn't been confirmed
   against a live server response yet -- the user's IP got rate-limited by
@@ -110,6 +110,8 @@ bit, not number (fixed in v1.7.1). See `CHANGELOG.md` and README
   (`ChangeMode`); not yet confirmed on real hardware.
 - `test_userfile_program_view.py` -- tests for the read-only Userfiles
   & Program tab; confirmed on real hardware (v1.7.1).
+- `test_userfile_program_write.py` -- tests for writing userfiles and
+  programs; confirmed on real hardware (v1.8.1).
 - `test_genre_feature.py` -- tests for the genre read/write feature;
   confirmed against real hardware as of v1.5.0 (writes fold into a
   `WRITE_NAME` write rather than a standalone action), including a

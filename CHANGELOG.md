@@ -1,5 +1,136 @@
 # Changelog
 
+## v1.8.2 -- Name writes keep a disc's userfiles, CONFIRMED; program auto-play confirmed
+
+The user tested the last open item on a real CD-425M (2026-09-23,
+raw-byte log):
+
+- **A name write now keeps a disc's userfiles.** Slot 1 was in #1-#3
+  (`0x07`). Writing track 1's name ("Gift Shop") sent
+  `02 fe 10 00 01 00 01 07 01 03 00 ...`, carrying userfiles `0x07` and
+  genre Alternative Rock. The re-read showed `0x07` on `DiscUserfiles`
+  and on every track, with genre unchanged. This confirms v1.8.0's fix.
+  Before it, every name write sent `userfiles=0`, which (since the
+  changer honors that byte, v1.8.1) would have removed the disc from
+  all its userfiles.
+- **Writing a program starts playback by itself.** The user confirmed
+  they didn't press Play during v1.8.1's program write.
+- **`ReadyForData`'s byte was `1` for this track-name write**, where
+  v1.8.1's was `0`. So it varies even for the same kind of write, and
+  it still doesn't predict success.
+
+No code change (version bump only). Test:
+`TestRealWriteSession.test_track_name_write_keeps_a_nonzero_mask`.
+
+## v1.8.1 -- Writing userfiles and programs CONFIRMED on real hardware
+
+The user tested v1.8.0 on a real CD-425M (2026-09-23, raw-byte log) and
+reported everything working as expected. Every write was ACK'd, and every
+re-read matched what was written:
+
+- **Userfile rename**: #1 "fUCK sHIT" -> "New Name" (`index` 1) and #3
+  (unnamed) -> "My List" (`index` 4). Both read back in the right
+  place, which confirms the bit indexing on writes too.
+- **Program write**: 3 steps (slot 1 T1, slot 2 T5, slot 3 T2). The
+  re-read returned the exact frame that was sent
+  (`02 0d 0a 00 03 01 00 01 02 00 05 03 00 02 d8`).
+- **Disc membership via `TextData`'s `userfiles` byte**: slot 1
+  `0x00` -> `0x07` (#1-#3), sent as a re-send of its disc name. The
+  re-read showed `userfiles=7` on `DiscUserfiles`, on the disc name and
+  on every track. Genre stayed Alternative Rock and no names changed.
+  **So the changer does honor that byte on a write**, and the
+  standalone `SET_USERFILES` path isn't needed.
+
+**New behavior, seen in this log:**
+
+- **Writing a program puts the changer into Program mode and starts it
+  playing.** Right after the write, with nothing else sent, the
+  changer reported `InfoEvent` `mode=3, program=1`, then Changing, then
+  Playing. Next Track then stepped through the program (step 2 slot 2
+  T5, step 3 slot 3 T2). That's the only way found so far to get into
+  Program mode from PC-Link, since `ChangeMode(Program)` is ignored
+  (v1.6.6). Not yet seen more than once. The write dialog now warns about
+  it.
+- **Leaving Program mode clears the program.** After
+  `ChangeMode(Track)`, the program read came back empty. The owner's
+  manual (p. 25, "To clear all tracks") says pressing P.MODE does the
+  same thing. It also explains why last session's 11-step program was
+  already gone at the start of this one.
+- **`ReadyForData`'s byte varies**: `1` for disc-name and userfile-name
+  writes, `4` for the program write, and **`0` for a track-name write**
+  (earlier sessions recorded `1` for track names too). Every one of
+  these writes worked, so the byte isn't a go/no-go signal. Its meaning
+  is still unknown.
+
+**Still unconfirmed:** that a name write *keeps* a non-zero mask. Since
+the `userfiles` byte is honored, the old `userfiles=0` name writes would
+almost certainly have cleared it, which is what v1.8.0's fix prevents.
+But this session's only name write ("Gift Shoppe") was on slot 1 while
+its mask was still `0x00`, so the fix itself wasn't exercised. Slot 1 is
+now `0x07`, so writing any track name there and checking that it stays
+`0x07` would settle it. Writing an empty program (clearing it) also
+hasn't been tried.
+
+Also seen again: `DiscInfo` for empty slots 100-102 reports format `0x90`
+(v1.7.1). Tests: `TestRealWriteSession` in
+`test_userfile_program_write.py`, built from this log's frames.
+
+## v1.8.0 -- Writing userfiles and programs (NOT yet tried on real hardware)
+
+The Userfiles & Program tab can now write, not just read. **Nothing here
+has been tried on real hardware yet.** Three new writes:
+
+- **Rename a userfile** (select a row, "Rename Selected..."): a
+  `WRITE_NAME` through the CONFIRMED name-write path, shaped exactly like
+  the CONFIRMED read from v1.7.1: `DataAccess(WRITE_NAME, TextData,
+  slot=0, info_type=7)`, then a `TextData` frame with `index` = the
+  userfile's **bit**. For the same name, that frame is byte-for-byte what
+  the changer sent us on the read (test checks this against the logged
+  frame). Names are limited to 25 plain-ASCII characters (manual p. 35).
+- **Set which userfiles a disc is in** (slot + 8 checkboxes, "Write
+  Disc's Userfiles"): **not** the standalone `Action.SET_USERFILES` +
+  `DiscUserfiles` frame. That's the same slot+byte shape as the
+  `SET_DISC_GENRE` + `DiscGenre` write real hardware rejected three
+  times (v1.4.0-v1.4.2). `TextData` has a `userfiles` byte next to
+  `genre`, so following the genre precedent (v1.5.0), the app re-sends
+  the disc's current name with the new mask in it, and the disc's
+  current genre too, so it isn't reset. It refuses if the disc has no
+  name, since there'd be nothing to re-send. **Open question:** whether
+  the changer honors that byte on a write. If it ignores it, the
+  standalone `SET_USERFILES` path is next.
+- **Program editor** (Read Program, then add/remove/reorder steps with
+  a slot, track or "All tracks", then "Write Program"):
+  `DataAccess(WRITE_PROGRAM, DiscListing, slot=0)`, then a `DiscListing`
+  frame. There's no other mechanism for this one. Written from the
+  11-step program read in v1.7.1, the frame is byte-identical to the
+  changer's own reply. Up to 32 steps (manual p. 24). Writing an empty
+  program is allowed, with a warning; what the changer does with it is
+  unknown.
+
+Every write re-reads afterward (names, program, or the disc's
+userfiles/genre/names), so the tab shows what the changer actually
+stored.
+
+**Likely latent bug, fixed without hardware proof:** every name write
+so far has sent `TextData`'s `userfiles` byte as `0`. Genre turned out to
+be set by *every* `TextData` write (v1.5.1), so this byte may well work
+the same way, meaning any Disc Data tab write may have been silently
+removing the disc from all its userfiles. Not observed yet (no one has
+checked membership after a name write). Now every name write carries the
+disc's known mask. If the slot's genre or userfiles haven't been read
+yet, the app reads them first, and if they still can't be read, it
+writes nothing rather than guess `0` (for genre that's a change: it used
+to fall back to `0`). Every name write also re-reads `DiscUserfiles`
+afterward, so the log answers the question either way.
+
+**What to look for on hardware** (with "show raw bytes" on):
+`ReadyForData`'s `raw_byte` for each new write (it was `1` for every
+confirmed `WRITE_NAME` and `8` for every failed `SET_DISC_GENRE`),
+whether the follow-up frame gets `ACK` or an immediate `EOT`, and
+whether the re-read matches.
+
+Tests: `test_userfile_program_write.py`.
+
 ## v1.7.1 -- Userfiles & Program tab CONFIRMED on real hardware; userfile-name lookup fixed
 
 The user tested v1.7.0 on a real CD-425M (2026-09-22, raw-byte log) and
@@ -9,7 +140,8 @@ reported it working as expected. All three reads work:
   returned one `DiscListing` frame with 11 steps, all on slot 1: tracks
   1, 1, 2, 5, 8, 4, 2, 5, 3, 6, 9. The shape matches
   `cd_disclisting.html` exactly (length byte, then 3-byte slot/track
-  items), and nothing was truncated.
+  items), and nothing was truncated. The user then confirmed those 11
+  steps match the program they stored from the remote.
 - **Read Userfiles for Known Discs**, after a full Disc Map scan (3
   discs), returned one `DiscUserfiles` frame per slot: slot 1 = `0x00`,
   slot 2 = `0x04` (#3), slot 3 = `0x01` (#1). That matches what

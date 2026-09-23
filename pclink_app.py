@@ -20,7 +20,7 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 
 try:
     from serial.tools import list_ports
@@ -140,7 +140,18 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # yet tried against real hardware.
 # v1.7.1 -- confirmed on real hardware; fixed userfile names being looked
 # up by userfile number when the changer keys them by userfile BIT.
-APP_VERSION = "1.7.1"
+# v1.8.0 -- writing on the Userfiles & Program tab: rename a userfile
+# (WRITE_NAME, info_type 7), set a disc's userfiles (folded into a
+# disc-name WRITE_NAME via TextData's userfiles byte, like genre), and a
+# program editor (WRITE_PROGRAM + DiscListing). Every name write now also
+# carries the disc's known userfile mask instead of 0, reading genre/
+# userfiles first if they aren't known.
+# v1.8.1 -- all three writes CONFIRMED on real hardware. Writing a
+# program also puts the changer into Program mode and starts it playing;
+# switching back to Track mode clears the program (as the manual says).
+# v1.8.2 -- CONFIRMED that name writes keep a disc's userfiles (a track
+# name written on a disc in #1-#3 left it in #1-#3). Docs/tests only.
+APP_VERSION = "1.8.2"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -355,6 +366,134 @@ def program_rows(items: list, disc_names: dict, track_names: dict) -> list[tuple
     return rows
 
 
+# -- Writing userfiles & programs (v1.8.0, CONFIRMED on real hardware v1.8.1) --
+
+USERFILE_NAME_MAX = 25  # owner's manual p. 35
+PROGRAM_MAX_STEPS = 32  # owner's manual p. 24
+SLOT_MIN, SLOT_MAX = 1, 200
+TRACK_MIN, TRACK_MAX = 1, 99
+
+
+def validate_title(text: str, max_len: int) -> str:
+    """Strip and check a name the changer will store. Raises ValueError for
+    blank, too-long or non-printable-ASCII text (encode_text_data would
+    otherwise silently turn non-ASCII into '?')."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("The name can't be blank.")
+    if len(text) > max_len:
+        raise ValueError(f"The changer stores at most {max_len} characters ({len(text)} given).")
+    if any(not (0x20 <= ord(c) < 0x7F) for c in text):
+        raise ValueError("Only plain ASCII letters, digits and punctuation can be stored.")
+    return text
+
+
+def build_userfile_name_write(number: int, name: str) -> tuple[bytes, bytes]:
+    """(request_data, follow_up_data) for naming userfile #`number` (1..8).
+    A WRITE_NAME, the CONFIRMED name-write path, shaped exactly like the
+    CONFIRMED read (v1.7.1): slot 0, info_type 7, and `index` = the
+    userfile's BIT, with the userfiles/genre/format bytes 0 as in the
+    changer's own replies. Raises ValueError for a bad number or name."""
+    if not 1 <= number <= USERFILE_COUNT:
+        raise ValueError(f"Userfile number must be 1-{USERFILE_COUNT}.")
+    name = validate_title(name, USERFILE_NAME_MAX)
+    request_data = proto.encode_data_access(
+        proto.Action.WRITE_NAME, proto.DataType.TEXT_DATA, slot=0,
+        info_type=proto.InfoType.USERFILE_NAMES,
+    )
+    follow_up_data = proto.encode_text_data(
+        slot=0, index=proto.userfile_param(number), text=name,
+        info_type=proto.InfoType.USERFILE_NAMES,
+    )
+    return request_data, follow_up_data
+
+
+def userfile_mask_from_flags(flags: list) -> int:
+    """[#1 checked, #2 checked, ...] -> bitmask (bit n-1 = #n)."""
+    return sum(1 << i for i, on in enumerate(flags) if on)
+
+
+def userfile_flags_from_mask(mask: int) -> list[bool]:
+    return [bool(mask & (1 << i)) for i in range(USERFILE_COUNT)]
+
+
+def plan_userfile_membership_write(disc_name: str | None, genre: int | None) -> tuple[list, str | None]:
+    """Which discs a disc belongs to is set by re-sending its disc name
+    with the new mask in TextData's `userfiles` byte, the same way genre
+    rides along (v1.5.0/v1.5.1), rather than via the standalone
+    Action.SET_USERFILES + DiscUserfiles frame. That standalone shape is
+    the same slot+byte shape as the SET_DISC_GENRE + DiscGenre write that
+    real hardware rejected three times. CONFIRMED (v1.8.1): the changer
+    honors TextData's userfiles byte on a write (slot 1 0x00 -> 0x07,
+    read back on the disc name and every track, genre unchanged).
+
+    The disc name and genre must both be known, since the write re-sends
+    the one and would reset the other (genre is set by every TextData
+    write, CONFIRMED v1.5.1). Returns (items, error) where items is in
+    _write_to_changer_worker's (index, text, info_type, label, genre)
+    form; the mask itself goes in the worker's `userfiles` argument."""
+    if not disc_name:
+        return [], (
+            "Can't set userfiles: they're written by re-sending the disc's "
+            "name, and this disc has no name stored (or it couldn't be read). "
+            "Name the disc on the Disc Data tab first."
+        )
+    if genre is None:
+        return [], (
+            "Can't set userfiles: the disc's current genre couldn't be read, "
+            "and the write would reset it."
+        )
+    return [(0, disc_name, proto.InfoType.DISC_NAMES, "Disc Name (userfiles only)", genre)], None
+
+
+def build_program_write(steps: list[tuple[int, int]]) -> tuple[bytes, bytes]:
+    """(request_data, follow_up_data) for Action.WRITE_PROGRAM: a
+    DataAccess(WRITE_PROGRAM, DiscListing, slot=0) request (slot 0, like
+    the CONFIRMED program read) then a DiscListing payload of (slot,
+    track) steps, track = proto.LISTING_ALL_TRACKS for a whole disc.
+    CONFIRMED on real hardware (v1.8.1; ReadyForData raw_byte 4). Writing
+    a program also switched the changer into Program mode and started it
+    playing. Raises ValueError for more than 32
+    steps or an out-of-range slot/track."""
+    if len(steps) > PROGRAM_MAX_STEPS:
+        raise ValueError(f"A program holds at most {PROGRAM_MAX_STEPS} steps ({len(steps)} given).")
+    for n, (slot, track) in enumerate(steps, start=1):
+        if not SLOT_MIN <= slot <= SLOT_MAX:
+            raise ValueError(f"Step {n}: disc slot {slot} is out of range {SLOT_MIN}-{SLOT_MAX}.")
+        if track != proto.LISTING_ALL_TRACKS and not TRACK_MIN <= track <= TRACK_MAX:
+            raise ValueError(f"Step {n}: track {track} is out of range {TRACK_MIN}-{TRACK_MAX}.")
+    request_data = proto.encode_data_access(
+        proto.Action.WRITE_PROGRAM, proto.DataType.DISC_LISTING, slot=0,
+    )
+    return request_data, proto.encode_disc_listing(steps)
+
+
+def program_steps_from_items(items: list) -> list[tuple[int, int]]:
+    """Decoded DiscListing items -> editable (slot, track) steps."""
+    return [(i["slot"], i["track"]) for i in items]
+
+
+def program_items_from_steps(steps: list[tuple[int, int]]) -> list[dict]:
+    """(slot, track) steps -> the item dicts program_rows() displays."""
+    return [{"slot": s, "track": t, "all_tracks": t == proto.LISTING_ALL_TRACKS} for s, t in steps]
+
+
+def missing_disc_state(slot: int, disc_names: dict, genres: dict, userfiles: dict,
+                       need_name: bool = False) -> list[str]:
+    """What a TextData write to `slot` needs but the app hasn't read yet.
+    Every TextData write sets the disc's genre (CONFIRMED v1.5.1) and, it's
+    assumed by analogy, its userfile mask, so writing without knowing
+    them risks resetting them to 0."""
+    missing = []
+    if need_name and slot not in disc_names:
+        missing.append("disc name")
+    if slot not in genres:
+        missing.append("genre")
+    if slot not in userfiles:
+        missing.append("userfiles")
+    return missing
+
+
 class ScrollableFrame(ttk.Frame):
     """A vertically-scrollable container. Put widgets in `.inner` (an
     ordinary ttk.Frame) the same way you would in any other frame; this
@@ -460,6 +599,10 @@ class App(tk.Tk):
         self._userfiles_cache: dict[int, int] = {}
         self._userfile_name_cache: dict[int, str] = {}  # TextData index (userfile BIT) -> name
         self._program_items: list | None = None  # decoded DiscListing items, None = not read yet
+        # v1.8.0: the program editor's (slot, track) steps. Replaced by each
+        # program read; "dirty" once edited and not yet written.
+        self._program_draft: list[tuple[int, int]] = []
+        self._program_draft_dirty = False
         self._userfile_scan_running = False
 
         # Mode code from the last "Set Mode" click, until an InfoEvent
@@ -842,10 +985,11 @@ class App(tk.Tk):
             )
             self._disc_map_cells[slot] = rect
 
-        # -- Userfiles & Program tab (read-only, v1.7.0) ---------------------
+        # -- Userfiles & Program tab (read-only v1.7.0, writes v1.8.0) --------
         ttk.Label(
             uf_prog_tab, foreground="gray",
-            text="Read-only view of what's stored in the changer.",
+            text="Writing a program starts it playing in Program mode; switching "
+                 "to another play mode clears the program.",
         ).pack(anchor="w")
 
         uf_frame = ttk.LabelFrame(uf_prog_tab, text="Userfiles", padding=8)
@@ -857,24 +1001,77 @@ class App(tk.Tk):
         self.uf_scan_btn = ttk.Button(uf_toolbar, text="Read Userfiles for Known Discs",
                                       command=self._read_userfiles_for_known_discs)
         self.uf_scan_btn.pack(side="left", padx=2)
+        self.uf_rename_btn = ttk.Button(uf_toolbar, text="Rename Selected...",
+                                        command=self._rename_userfile)
+        self.uf_rename_btn.pack(side="left", padx=2)
         self.uf_progress_label = ttk.Label(uf_toolbar, text="")
         self.uf_progress_label.pack(side="left", padx=8)
         self.uf_tree = ttk.Treeview(uf_frame, columns=("uf", "name", "discs"),
-                                    show="headings", height=8)
+                                    show="headings", height=8, selectmode="browse")
         for col, text, width in (("uf", "Userfile", 70), ("name", "Name", 180), ("discs", "Discs", 480)):
             self.uf_tree.heading(col, text=text)
             self.uf_tree.column(col, width=width, anchor="w", stretch=(col == "discs"))
         self.uf_tree.pack(fill="both", expand=True, pady=(4, 0))
+
+        # Per-disc membership editor: load a slot's mask, tick boxes, write.
+        member_frame = ttk.Frame(uf_frame)
+        member_frame.pack(fill="x", pady=(6, 0))
+        ttk.Label(member_frame, text="Disc slot:").grid(row=0, column=0, sticky="w")
+        self.uf_member_slot_var = tk.IntVar(value=1)
+        ttk.Spinbox(member_frame, from_=SLOT_MIN, to=SLOT_MAX, width=5,
+                    textvariable=self.uf_member_slot_var).grid(row=0, column=1, padx=4)
+        ttk.Button(member_frame, text="Current Disc",
+                   command=self._uf_member_use_current).grid(row=0, column=2, padx=2)
+        ttk.Button(member_frame, text="Load",
+                   command=self._uf_member_load).grid(row=0, column=3, padx=2)
+        self.uf_member_write_btn = ttk.Button(member_frame, text="Write Disc's Userfiles",
+                                              command=self._write_userfile_membership)
+        self.uf_member_write_btn.grid(row=0, column=4, padx=2)
+        self.uf_member_label = ttk.Label(member_frame, text="", foreground="gray")
+        self.uf_member_label.grid(row=0, column=5, sticky="w", padx=8)
+        checks = ttk.Frame(member_frame)
+        checks.grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        self.uf_member_vars = [tk.BooleanVar(value=False) for _ in range(USERFILE_COUNT)]
+        self.uf_member_checks = []
+        for i, var in enumerate(self.uf_member_vars):
+            cb = ttk.Checkbutton(checks, text=f"#{i + 1}", variable=var)
+            cb.grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 12))
+            self.uf_member_checks.append(cb)
 
         prog_frame = ttk.LabelFrame(uf_prog_tab, text="Program", padding=8)
         prog_frame.pack(fill="both", expand=True, pady=4)
         prog_toolbar = ttk.Frame(prog_frame)
         prog_toolbar.pack(fill="x")
         ttk.Button(prog_toolbar, text="Read Program", command=self._read_program).pack(side="left", padx=2)
+        self.prog_write_btn = ttk.Button(prog_toolbar, text="Write Program", command=self._write_program)
+        self.prog_write_btn.pack(side="left", padx=2)
         self.prog_summary_label = ttk.Label(prog_toolbar, text="Not read yet.")
         self.prog_summary_label.pack(side="left", padx=8)
+
+        prog_edit = ttk.Frame(prog_frame)
+        prog_edit.pack(fill="x", pady=(4, 0))
+        ttk.Label(prog_edit, text="Disc slot:").pack(side="left")
+        self.prog_slot_var = tk.IntVar(value=1)
+        ttk.Spinbox(prog_edit, from_=SLOT_MIN, to=SLOT_MAX, width=5,
+                    textvariable=self.prog_slot_var).pack(side="left", padx=4)
+        ttk.Label(prog_edit, text="Track:").pack(side="left")
+        self.prog_track_var = tk.IntVar(value=1)
+        self.prog_track_spin = ttk.Spinbox(prog_edit, from_=TRACK_MIN, to=TRACK_MAX, width=4,
+                                           textvariable=self.prog_track_var)
+        self.prog_track_spin.pack(side="left", padx=4)
+        self.prog_all_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            prog_edit, text="All tracks", variable=self.prog_all_var,
+            command=lambda: self.prog_track_spin.configure(
+                state="disabled" if self.prog_all_var.get() else "normal"),
+        ).pack(side="left", padx=4)
+        for text, cmd in (("Add Step", self._prog_add_step), ("Remove", self._prog_remove_step),
+                          ("Up", lambda: self._prog_move(-1)), ("Down", lambda: self._prog_move(1)),
+                          ("Clear", self._prog_clear)):
+            ttk.Button(prog_edit, text=text, command=cmd).pack(side="left", padx=2)
+
         self.prog_tree = ttk.Treeview(prog_frame, columns=("step", "disc", "track"),
-                                      show="headings", height=8)
+                                      show="headings", height=8, selectmode="browse")
         for col, text, width in (("step", "Step", 60), ("disc", "Disc", 300), ("track", "Track", 300)):
             self.prog_tree.heading(col, text=text)
             self.prog_tree.column(col, width=width, anchor="w", stretch=(col != "step"))
@@ -1113,6 +1310,8 @@ class App(tk.Tk):
                             for i in p.get("items", []))
             )
             self._program_items = p.get("items", [])
+            self._program_draft = program_steps_from_items(self._program_items)
+            self._program_draft_dirty = False
             self.ui_queue.put(self._refresh_program_view)
 
         elif frame.command in (proto.CMD_TEXT_DATA, proto.CMD_LONG_TEXT_DATA):
@@ -1692,7 +1891,7 @@ class App(tk.Tk):
 
         self.ui_queue.put(update)
 
-    def _write_to_changer(self):
+    def _write_to_changer(self, prefetched: bool = False):
         """Writes every non-empty column-3 ("Custom") entry back to the
         changer for the slot currently shown in the Disc Data tab, via
         Action.WRITE_NAME -- confirmed against real hardware for names
@@ -1712,13 +1911,22 @@ class App(tk.Tk):
         real-hardware attempts at a standalone Action.SET_DISC_GENRE
         write (v1.4.0-v1.4.2) all failed in three different ways before
         this approach was tried -- see CHANGELOG.md's v1.4.1-v1.5.1
-        entries for that history."""
+        entries for that history.
+
+        v1.8.0: every write also carries the disc's known userfile mask
+        (TextData has a `userfiles` byte too, and it's assumed to behave
+        like genre). If the slot's genre or userfiles haven't been read
+        yet, they're read first; if they still can't be, nothing is
+        written rather than risk resetting them."""
         link = self._require_link()
         if link is None:
             return
         slot = self._disc_data_slot
         if slot is None:
             messagebox.showinfo("Nothing to write", "No current disc loaded yet.")
+            return
+        if not self._ensure_disc_state(link, slot, self._write_to_changer, prefetched,
+                                       self.dd_write_btn):
             return
 
         items = gather_disc_data_write_items(self._disc_data_rows)
@@ -1760,12 +1968,75 @@ class App(tk.Tk):
             return
 
         self.dd_write_btn.configure(state="disabled")
-        self._log(f"Write to Changer: writing {len(final_items)} value(s) to slot {slot}...")
+        userfiles = self._userfiles_cache[slot]
+        self._log(
+            f"Write to Changer: writing {len(final_items)} value(s) to slot {slot} "
+            f"(keeping userfiles=0x{userfiles:02X})..."
+        )
         threading.Thread(
-            target=self._write_to_changer_worker, args=(link, slot, final_items), daemon=True
+            target=self._write_to_changer_worker, args=(link, slot, final_items),
+            kwargs={"userfiles": userfiles}, daemon=True,
         ).start()
 
-    def _write_to_changer_worker(self, link: PCLinkConnection, slot: int, items: list):
+    def _ensure_disc_state(self, link: PCLinkConnection, slot: int, retry, prefetched: bool,
+                           button, need_name: bool = False) -> bool:
+        """Guard for a TextData write to `slot`: True if the slot's genre and
+        userfiles (and disc name, if `need_name`) are all known. Otherwise,
+        on the first call, reads what's missing on a background thread and
+        then calls `retry(prefetched=True)` on the UI thread, returning
+        False; on that second call, shows an error if something still
+        couldn't be read, and returns False."""
+        missing = missing_disc_state(slot, self._disc_name_cache, self._genre_cache,
+                                     self._userfiles_cache, need_name=need_name)
+        if not missing:
+            return True
+        if prefetched:
+            messagebox.showerror(
+                "Can't write",
+                f"Couldn't read slot {slot}'s current {', '.join(missing)}. Every name "
+                "write re-sends the disc's genre and userfiles, so writing without "
+                "knowing them could reset them. Nothing was written.",
+            )
+            return False
+        self._log(f"Write: reading slot {slot}'s {', '.join(missing)} first, so the write keeps them...")
+        button.configure(state="disabled")
+
+        def work():
+            self._read_disc_state_sync(link, slot, missing)
+
+            def done():
+                button.configure(state="normal")
+                retry(prefetched=True)
+            self.ui_queue.put(done)
+
+        threading.Thread(target=work, daemon=True).start()
+        return False
+
+    def _read_disc_state_sync(self, link: PCLinkConnection, slot: int, what: list[str]):
+        """Background thread: blocking reads of the listed disc state. The
+        reply frames arrive (and are cached by _on_frame) during each
+        send()'s own drain, so the caches are current once this returns."""
+        requests = {
+            "disc name": (proto.DataType.TEXT_DATA, proto.InfoType.DISC_NAMES),
+            "genre": (proto.DataType.DISC_GENRE, 0),
+            "userfiles": (proto.DataType.DISC_USERFILES, 0),
+        }
+        for item in what:
+            data_type, info_type = requests[item]
+            data = proto.encode_data_access(proto.Action.RETRIEVE_DATA, data_type,
+                                            slot=slot, info_type=info_type)
+            for attempt in range(3):
+                try:
+                    link.send(proto.CMD_DATA_ACCESS, data)
+                    break
+                except PCLinkTimeout:
+                    time.sleep(0.1)  # likely a bus collision, see _send_bg
+                except PCLinkError as exc:
+                    self._log(f"Reading slot {slot}'s {item} failed: {exc}")
+                    break
+
+    def _write_to_changer_worker(self, link: PCLinkConnection, slot: int, items: list,
+                                 userfiles: int = 0, on_done=None):
         """Runs on its own background thread -- one send_write() per item,
         same one-at-a-time approach as the Disc Map scan worker
         (PCLinkConnection already serializes sends through its own IO
@@ -1778,6 +2049,12 @@ class App(tk.Tk):
         Disc Data tab's Genre row, the disc-name item -- which carries it
         alongside the text, per cd_textdata.html's documented TextData
         payload shape (slot/index/userfiles/info_type/genre/format/text).
+
+        `userfiles` (v1.8.0) is the disc's userfile mask, sent in every
+        item's `userfiles` byte: the currently-known mask for a plain name
+        write, or the new one for a userfile-membership write. `on_done`
+        runs on the UI thread afterward (default: re-enable the Disc Data
+        tab's write button).
         """
         ok = 0
         failed = 0
@@ -1789,6 +2066,7 @@ class App(tk.Tk):
             )
             follow_up_data = proto.encode_text_data(
                 slot=slot, index=index, text=text, info_type=info_type, genre=genre,
+                userfiles=userfiles,
             )
             try:
                 link.send_write(
@@ -1845,7 +2123,16 @@ class App(tk.Tk):
                     ),
                     f"DataAccess(DiscGenre, slot={slot})",
                 )
-        self.ui_queue.put(lambda: self.dd_write_btn.configure(state="normal"))
+            # Always re-read userfiles too: that's what shows whether the
+            # changer honors (or ignores) TextData's userfiles byte.
+            self._send_bg(
+                proto.CMD_DATA_ACCESS,
+                proto.encode_data_access(
+                    proto.Action.RETRIEVE_DATA, proto.DataType.DISC_USERFILES, slot=slot,
+                ),
+                f"DataAccess(DiscUserfiles, slot={slot})",
+            )
+        self.ui_queue.put(on_done or (lambda: self.dd_write_btn.configure(state="normal")))
 
     def _copy_column_to_custom(self, source: str):
         var_key = "changer_var" if source == "changer" else "gnudb_var"
@@ -2195,21 +2482,253 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
 
     def _refresh_userfiles_view(self):
+        selected = self.uf_tree.selection()
         self.uf_tree.delete(*self.uf_tree.get_children())
-        for row in userfile_rows(self._userfiles_cache, self._userfile_name_cache,
-                                 self._disc_name_cache):
-            self.uf_tree.insert("", "end", values=row)
+        for n, row in enumerate(userfile_rows(self._userfiles_cache, self._userfile_name_cache,
+                                              self._disc_name_cache), start=1):
+            self.uf_tree.insert("", "end", iid=str(n), values=row)
+        if selected and self.uf_tree.exists(selected[0]):
+            self.uf_tree.selection_set(selected[0])
+        for n, cb in enumerate(self.uf_member_checks, start=1):
+            name = self._userfile_name_cache.get(proto.userfile_param(n))
+            cb.configure(text=f"#{n} {name}" if name else f"#{n}")
 
     def _refresh_program_view(self):
+        selected = self.prog_tree.selection()
         self.prog_tree.delete(*self.prog_tree.get_children())
-        if self._program_items is None:
-            self.prog_summary_label.configure(text="Not read yet.")
+        rows = program_rows(program_items_from_steps(self._program_draft),
+                            self._disc_name_cache, self._track_name_cache)
+        for i, row in enumerate(rows):
+            self.prog_tree.insert("", "end", iid=str(i), values=row)
+        if selected and self.prog_tree.exists(selected[0]):
+            self.prog_tree.selection_set(selected[0])
+        if self._program_draft_dirty:
+            text = f"{len(rows)} step(s) -- edited, not written yet."
+        elif self._program_items is None:
+            text = "Not read yet."
+        else:
+            text = f"{len(rows)} step(s)." if rows else "No program stored."
+        self.prog_summary_label.configure(text=text)
+
+    # -- Writing (v1.8.0, CONFIRMED on real hardware v1.8.1) --------------
+
+    def _write_single_bg(self, link: PCLinkConnection, label: str, request_data: bytes,
+                         follow_up_command: int, follow_up_data: bytes,
+                         reread: tuple[bytes, str], button):
+        """One send_write() on a background thread, logged like the Disc
+        Data tab's writes, then a re-read so the view shows what the changer
+        actually stored rather than what we sent."""
+        button.configure(state="disabled")
+
+        def work():
+            try:
+                link.send_write(proto.CMD_DATA_ACCESS, request_data, follow_up_command, follow_up_data)
+                self._log(f"{label}: written ok -- re-reading to check.")
+                self._send_bg(proto.CMD_DATA_ACCESS, reread[0], reread[1])
+            except PCLinkWriteUnconfirmed:
+                self._log(f"{label}: changer never sent ReadyForData, not written.")
+            except PCLinkNak:
+                self._log(f"{label}: changer NAK'd the write.")
+            except PCLinkTimeout:
+                self._log(f"{label}: timed out.")
+            except PCLinkError as exc:
+                self._log(f"{label}: error: {exc}")
+            self.ui_queue.put(lambda: button.configure(state="normal"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _rename_userfile(self):
+        link = self._require_link()
+        if link is None:
             return
-        rows = program_rows(self._program_items, self._disc_name_cache, self._track_name_cache)
-        for row in rows:
-            self.prog_tree.insert("", "end", values=row)
-        self.prog_summary_label.configure(
-            text=f"{len(rows)} step(s)." if rows else "No program stored."
+        selected = self.uf_tree.selection()
+        if not selected:
+            messagebox.showinfo("Rename userfile", "Select a userfile in the table first.")
+            return
+        number = int(selected[0])
+        current = self._userfile_name_cache.get(proto.userfile_param(number), "")
+        name = simpledialog.askstring(
+            "Rename userfile",
+            f"New name for userfile #{number} (up to {USERFILE_NAME_MAX} characters):",
+            initialvalue=current, parent=self,
+        )
+        if name is None:
+            return
+        try:
+            request_data, follow_up_data = build_userfile_name_write(number, name)
+        except ValueError as exc:
+            messagebox.showerror("Rename userfile", str(exc))
+            return
+        self._write_single_bg(
+            link, f"Rename userfile #{number} -> {name.strip()!r}",
+            request_data, proto.CMD_TEXT_DATA, follow_up_data,
+            (proto.encode_data_access(proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA, slot=0,
+                                      info_type=proto.InfoType.USERFILE_NAMES),
+             "DataAccess(UserfileNames)"),
+            self.uf_rename_btn,
+        )
+
+    def _uf_member_slot(self) -> int | None:
+        try:
+            slot = int(self.uf_member_slot_var.get())
+        except (tk.TclError, ValueError):
+            slot = None
+        if slot is None or not SLOT_MIN <= slot <= SLOT_MAX:
+            messagebox.showerror("Disc slot", f"Enter a disc slot from {SLOT_MIN} to {SLOT_MAX}.")
+            return None
+        return slot
+
+    def _uf_member_use_current(self):
+        if self._current_slot is None:
+            messagebox.showinfo("Current disc", "The current disc isn't known yet.")
+            return
+        self.uf_member_slot_var.set(self._current_slot)
+        self._uf_member_load()
+
+    def _uf_member_show(self, slot: int):
+        """Tick the boxes from the cached mask for `slot` (UI thread)."""
+        mask = self._userfiles_cache.get(slot)
+        name = self._disc_name_cache.get(slot)
+        if mask is None:
+            self.uf_member_label.configure(text=f"Slot {slot}: couldn't read its userfiles.")
+            return
+        for var, on in zip(self.uf_member_vars, userfile_flags_from_mask(mask)):
+            var.set(on)
+        self.uf_member_label.configure(
+            text=f"Slot {slot}{f' ({name})' if name else ''}: userfiles=0x{mask:02X}"
+        )
+
+    def _uf_member_load(self):
+        slot = self._uf_member_slot()
+        if slot is None:
+            return
+        if slot in self._userfiles_cache:
+            self._uf_member_show(slot)
+            return
+        link = self._require_link()
+        if link is None:
+            return
+        self.uf_member_label.configure(text=f"Reading slot {slot}...")
+
+        def work():
+            self._read_disc_state_sync(link, slot, ["userfiles"])
+            self.ui_queue.put(lambda: self._uf_member_show(slot))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _write_userfile_membership(self, prefetched: bool = False):
+        """Set which userfiles the chosen disc is in by re-sending its disc
+        name with the new mask (see plan_userfile_membership_write)."""
+        link = self._require_link()
+        if link is None:
+            return
+        slot = self._uf_member_slot()
+        if slot is None:
+            return
+        if not self._ensure_disc_state(link, slot, self._write_userfile_membership, prefetched,
+                                       self.uf_member_write_btn, need_name=True):
+            return
+        mask = userfile_mask_from_flags([v.get() for v in self.uf_member_vars])
+        items, error = plan_userfile_membership_write(self._disc_name_cache.get(slot),
+                                                      self._genre_cache.get(slot))
+        if error:
+            messagebox.showinfo("Can't set userfiles", error)
+            return
+        old = self._userfiles_cache[slot]
+        if not messagebox.askyesno(
+            "Write Disc's Userfiles",
+            f"Set slot {slot}'s userfiles to {', '.join(proto.userfile_list(mask)) or 'none'} "
+            f"(0x{old:02X} -> 0x{mask:02X})?\n\n"
+            f"This re-sends the disc name ({items[0][1]!r}) with the new userfiles "
+            "attached.",
+        ):
+            return
+        self.uf_member_write_btn.configure(state="disabled")
+        self._log(f"Userfiles: writing slot {slot} userfiles=0x{mask:02X} (was 0x{old:02X})...")
+
+        def done():
+            self.uf_member_write_btn.configure(state="normal")
+            self.dd_write_btn.configure(state="normal")
+
+        threading.Thread(
+            target=self._write_to_changer_worker, args=(link, slot, items),
+            kwargs={"userfiles": mask, "on_done": done}, daemon=True,
+        ).start()
+
+    def _prog_selected_index(self) -> int | None:
+        selected = self.prog_tree.selection()
+        return int(selected[0]) if selected else None
+
+    def _prog_edited(self, select: int | None = None):
+        self._program_draft_dirty = True
+        self._refresh_program_view()
+        if select is not None and self.prog_tree.exists(str(select)):
+            self.prog_tree.selection_set(str(select))
+            self.prog_tree.see(str(select))
+
+    def _prog_add_step(self):
+        if len(self._program_draft) >= PROGRAM_MAX_STEPS:
+            messagebox.showinfo("Program full", f"A program holds at most {PROGRAM_MAX_STEPS} steps.")
+            return
+        try:
+            slot = int(self.prog_slot_var.get())
+            track = proto.LISTING_ALL_TRACKS if self.prog_all_var.get() else int(self.prog_track_var.get())
+            build_program_write([(slot, track)])  # range check only
+        except (tk.TclError, ValueError) as exc:
+            messagebox.showerror("Add step", str(exc) or "Enter a disc slot and track number.")
+            return
+        # Insert after the selected step, else at the end.
+        index = self._prog_selected_index()
+        pos = len(self._program_draft) if index is None else index + 1
+        self._program_draft.insert(pos, (slot, track))
+        self._prog_edited(select=pos)
+
+    def _prog_remove_step(self):
+        index = self._prog_selected_index()
+        if index is None:
+            return
+        del self._program_draft[index]
+        self._prog_edited(select=min(index, len(self._program_draft) - 1))
+
+    def _prog_move(self, delta: int):
+        index = self._prog_selected_index()
+        if index is None:
+            return
+        target = index + delta
+        if not 0 <= target < len(self._program_draft):
+            return
+        steps = self._program_draft
+        steps[index], steps[target] = steps[target], steps[index]
+        self._prog_edited(select=target)
+
+    def _prog_clear(self):
+        if self._program_draft:
+            self._program_draft = []
+            self._prog_edited()
+
+    def _write_program(self):
+        link = self._require_link()
+        if link is None:
+            return
+        steps = list(self._program_draft)
+        try:
+            request_data, follow_up_data = build_program_write(steps)
+        except ValueError as exc:
+            messagebox.showerror("Write Program", str(exc))
+            return
+        what = f"this {len(steps)}-step program" if steps else "an EMPTY program (clearing it)"
+        if not messagebox.askyesno(
+            "Write Program",
+            f"Write {what} to the changer?\n\nThis replaces the program stored there, "
+            "and the changer may switch to Program mode and start playing it.",
+        ):
+            return
+        self._write_single_bg(
+            link, f"Write Program ({len(steps)} step(s))",
+            request_data, proto.CMD_DISC_LISTING, follow_up_data,
+            (proto.encode_data_access(proto.Action.RETRIEVE_DATA, proto.DataType.DISC_LISTING, slot=0),
+             "DataAccess(DiscListing / program)"),
+            self.prog_write_btn,
         )
 
     def _read_userfile_names(self):

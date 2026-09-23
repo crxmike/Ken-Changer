@@ -35,11 +35,9 @@ rule carried over from this project's prior work. Concretely:
 
 See `START_HERE.md`'s "Current status" and "In progress / next up"
 sections for the live state -- don't duplicate it here since it'll go
-stale. As of the last update: v1.2.0+ (read/control, TOC/DiscID, Disc Map
-all hardware-confirmed); gnudb.org querying wired up but live round-trip
-unconfirmed; writing to the changer (`DataAccess` + `WRITE_NAME` /
-`SET_DISC_GENRE` / `WRITE_PROGRAM` / `SET_USERFILES`) is the next planned
-feature.
+stale. As of the last update: v1.8.2 (names, genre, and reading and
+writing userfiles/program all hardware-confirmed); gnudb.org querying
+wired up but live round-trip unconfirmed.
 
 ## Files
 
@@ -55,6 +53,8 @@ feature.
   (`ChangeMode`, v1.6.0).
 - `test_userfile_program_view.py` -- tests for the read-only Userfiles &
   Program tab (v1.7.0).
+- `test_userfile_program_write.py` -- tests for writing userfiles and
+  programs (v1.8.0).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

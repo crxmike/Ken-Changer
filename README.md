@@ -1,8 +1,8 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.7.1 -- read/control + TOC/DiscID + Disc Map + writing
-disc/track names + reading/writing genre, all confirmed working against
-real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
+**Status: v1.8.2 -- read/control + TOC/DiscID + Disc Map + writing
+disc/track names + reading/writing genre + reading/writing userfiles
+and programs, all confirmed working against real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Querying gnudb.org is wired up but
 its live round-trip is unconfirmed. Genre writing took four different
 approaches to get right -- it goes out folded into a `WRITE_NAME` write
@@ -13,8 +13,8 @@ disc-level value that EVERY `WRITE_NAME` write sets, so v1.5.1 fixed
 (and CONFIRMED the fix for) a real bug where writing an unrelated track
 name was silently resetting genre back to "Unassigned."** See "Honest
 gaps" #14 and `CHANGELOG.md`'s v1.4.1-v1.5.1 entries for the full history
-if you're extending this. `WRITE_PROGRAM`/`SET_USERFILES` are still
-defined at the protocol layer but have no UI yet. v1.6.x adds a play
+if you're extending this. v1.8.0 adds writing userfiles and programs
+(see "Honest gaps" #17). v1.6.x adds a play
 mode selector (`ChangeMode`), **partly confirmed on real hardware**.
 
 A small desktop app for controlling a Kenwood CD-425M CD changer (also
@@ -130,12 +130,16 @@ python pclink_app.py
   changer's own front-panel/remote menu; there is no way to trigger or
   detect this over the serial connection, so the Disc Map tab shows a
   standing note about it rather than trying to catch it automatically.
-- **Userfiles & Program tab** (v1.7.1, read-only, **confirmed on real
+- **Userfiles & Program tab** (reading v1.7.1, **confirmed on real
   hardware**): a table of userfiles #1-#8 with each one's
   name and the discs in it, plus the stored program (step, disc, track).
   Disc membership fills in automatically from normal traffic.
   "Read Userfiles for Known Discs", "Read Userfile Names" and "Read
-  Program" fetch the rest. See "Honest gaps" #16.
+  Program" fetch the rest. See "Honest gaps" #16. **Writing (v1.8.1,
+  confirmed on real hardware)**: rename a userfile, tick which userfiles
+  a disc is in, and edit and write the program (up to 32 steps). Writing
+  a program also starts it playing in Program mode, and switching to
+  another play mode clears it. See "Honest gaps" #17.
 - **Log console** with a "show raw bytes" toggle, so you can see the actual
   ENQ/ACK/STX/EOT byte exchange -- useful both for troubleshooting your
   specific unit and for extending the app later.
@@ -239,16 +243,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
 
 ## Not yet implemented
 
-- **Writing program/userfiles to the changer.** `Action.WRITE_NAME`
-  (disc/track names, column 3 of the Disc Data tab) and genre writing
-  (folded into a `WRITE_NAME` write rather than the standalone
-  `Action.SET_DISC_GENRE` the protocol docs' enum suggests -- see "Disc
-  Data tab" above and "Honest gaps" #14) are both wired up and confirmed
-  -- see `CHANGELOG.md`'s v1.3.0/v1.5.0 entries. `WRITE_PROGRAM` /
-  `SET_USERFILES` share the same `send_write()` plumbing in
-  `pclink_link.py` but still have no UI, and their encoders are untested
-  against real hardware (only proven self-consistent via round-trip
-  tests in `test_write_feature.py`).
+- **The standalone `Action.SET_USERFILES` write.** Not needed: disc
+  membership is written through `TextData`'s `userfiles` byte instead,
+  confirmed in v1.8.1 (see "Honest gaps" #17).
 - **A software fallback for "ALL DATA READ."** That command has to be run
   from the changer's own front-panel/remote menu (see the Disc Map tab's
   caveat above) -- there's no serial equivalent. For a user without a
@@ -483,9 +480,9 @@ exactly what's happening):
    metadata) against slot 3 on a real CD-425M, all ACK'd, all read back
    afterward with an exact match, every frame's checksum/length
    independently re-verified against `pclink_protocol.py`. No quirks
-   surfaced. `SET_DISC_GENRE` / `WRITE_PROGRAM` / `SET_USERFILES` share
-   the same `send_write()` plumbing but have no UI and remain untested
-   against real hardware beyond their own round-trip encoder tests.
+   surfaced. `WRITE_PROGRAM` got a UI in v1.8.0 and is
+   confirmed (v1.8.1, see #17); `SET_DISC_GENRE` / `SET_USERFILES` share the same
+   plumbing but aren't used.
 12. **Disc Map -- confirmed against real hardware, including a full
    200-slot scan.** The "occupied = track_count > 0" rule was already
    backed by two of the user's own log traces (one occupied slot, one
@@ -630,18 +627,47 @@ exactly what's happening):
      stored program plays from the remote (`mode=3`, with the `program`
      byte stepping 1, 2, ... through it), but the app's
      `ChangeMode(Program)` was ignored four times, both while Playing and
-     while Stopped. Like Best, it's left out of the dropdown.
+     while Stopped. Like Best, it's left out of the dropdown. **But
+     writing a program (v1.8.1) did switch into Program mode and start
+     playback**, see #17.
 
 16. **Userfiles & Program tab -- CONFIRMED against real hardware
    (v1.7.1).**
    - **Program**: `DataAccess(DiscListing)` with `slot=0` returns the
-     stored program as one `DiscListing` frame, shaped as documented.
+     stored program as one `DiscListing` frame, shaped as documented;
+     the user checked an 11-step read-back against the program they
+     stored, and it matched step for step.
    - **Userfile names**: `TextData` with `info_type=7` and `slot=0`
      returns all eight, **indexed by the userfile's bit** (1, 2, 4 ...
      128), not its number. Unnamed userfiles come back as a lone `0x01`.
      (v1.7.0 assumed index = number; fixed in v1.7.1.)
    - **`DiscUserfiles`**: one frame per requested slot, matching the
      membership `InfoEvent`/`TextData` already carry.
+
+17. **Writing userfiles and programs -- CONFIRMED against real
+   hardware (v1.8.1).** All three use `send_write()`'s two-transaction
+   choreography, and each re-read matched exactly.
+   - **Userfile names**: `WRITE_NAME` with `slot=0`, `info_type=7`, and
+     `TextData` `index` = the userfile's bit (#1 -> 1, #3 -> 4).
+   - **Disc membership**: the disc's name is re-sent with the new mask in
+     `TextData`'s `userfiles` byte, plus its current genre. **The changer
+     honors that byte**: slot 1 went `0x00` -> `0x07`, with genre and
+     names unchanged. The standalone `SET_USERFILES` + `DiscUserfiles`
+     write (the same shape as the genre write rejected in #14) was never
+     needed.
+   - **Program**: `WRITE_PROGRAM` + `DiscListing`, `slot=0`. **Writing it
+     switches the changer into Program mode and starts playback** with
+     nothing else sent (the user confirmed they didn't press Play). It's
+     the only way into Program mode found from PC-Link (#15).
+     **Leaving Program mode clears the program**, as the owner's manual
+     says for P.MODE. Writing an empty program hasn't been tried.
+   - **Name writes keep the disc's userfiles (v1.8.2, CONFIRMED)**:
+     every name write carries the disc's known mask (read first if
+     needed) rather than `0`, which would clear it. A track name written
+     on slot 1 (in #1-#3) left it in #1-#3.
+   - `ReadyForData`'s byte was `1` or `0` for track-name writes, `1` for
+     disc/userfile names and `4` for the program. All proceeded, and its
+     meaning is unknown.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

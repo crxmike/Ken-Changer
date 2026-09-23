@@ -58,9 +58,8 @@ actual payload as its OWN separate send() (a second, independent
 transaction, fresh ENQ and all); raises PCLinkWriteUnconfirmed if
 ReadyForData was never seen at all, without attempting the second send.
 Confirmed specifically for Action.WRITE_NAME / CMD_TEXT_DATA; the same
-choreography is assumed (not yet tested) for SET_DISC_GENRE/
-WRITE_PROGRAM/SET_USERFILES, which share this plumbing but have no UI
-yet. See CHANGELOG.md's v1.2.0 entry and README.md's "Write
+choreography was tried for a standalone SET_DISC_GENRE and failed (see
+CHANGELOG.md v1.4.x); WRITE_PROGRAM uses it too, CONFIRMED in v1.8.1. See CHANGELOG.md's v1.2.0 entry and README.md's "Write
 choreography" honest-gap entry for the full history of what was tried
 and ruled out along the way.
 
@@ -239,9 +238,8 @@ class PCLinkConnection:
         hardware for Action.WRITE_NAME (a write followed by an
         independent read-back matched exactly), after a first hypothesis
         was tried and disproved (see this module's docstring, "Note on
-        the write choreography", for the full reasoning). Not yet tested
-        for SET_DISC_GENRE/WRITE_PROGRAM/SET_USERFILES, which share this
-        same plumbing but have no UI yet.
+        the write choreography", for the full reasoning). Also used for
+        WRITE_PROGRAM, CONFIRMED in v1.8.1.
 
         `command`/`data` is the initiating DataAccess request
         (action=WRITE_NAME/SET_DISC_GENRE/WRITE_PROGRAM/SET_USERFILES,

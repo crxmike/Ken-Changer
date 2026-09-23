@@ -523,7 +523,9 @@ def encode_disc_genre(slot: int, genre: int) -> bytes:
 def encode_disc_userfiles(slot: int, userfiles: int) -> bytes:
     """Write payload for Action.SET_USERFILES, per cd_discuserfiles.html.
     `userfiles` is the same bit-or'd mask decode_disc_userfiles reads (see
-    USERFILE_BITS). Not yet wired up to the UI."""
+    USERFILE_BITS). Not used: v1.8.0 writes disc membership through
+    TextData's userfiles byte instead (see pclink_app.py's
+    plan_userfile_membership_write)."""
     return struct.pack("<HB", slot & 0xFFFF, userfiles & 0xFF)
 
 
@@ -531,8 +533,8 @@ def encode_disc_listing(items: list[tuple[int, int]]) -> bytes:
     """Write payload for Action.WRITE_PROGRAM, per cd_disclisting.html: a
     length byte followed by that many slot_track pairs (short slot, byte
     track -- cd_types.html's "slot_track" type). A track value of 0xAA
-    means "all tracks for the disc", per that doc's own note. Not yet
-    wired up to the UI (no program editor exists yet)."""
+    means "all tracks for the disc", per that doc's own note. Used by the
+    v1.8.0 program editor; CONFIRMED on real hardware (v1.8.1)."""
     out = bytearray([len(items) & 0xFF])
     for slot, track in items:
         out += struct.pack("<HB", slot & 0xFFFF, track & 0xFF)
