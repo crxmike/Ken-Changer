@@ -50,14 +50,15 @@ Reading genre has worked cleanly in every session so far. See
 `CHANGELOG.md`'s v1.4.1-v1.5.1 entries and README.md's "Honest gaps"
 #13/#14 for the full detail.
 
-**v1.6.0-v1.6.6** -- a Play Mode selector (`ChangeMode`) on the Control
+**v1.6.0-v1.6.7** -- a Play Mode selector (`ChangeMode`) on the Control
 tab, plus a "Mode Param" status row. **Partly confirmed on real
 hardware.** Track, Music Type and Userfile modes switch correctly. The
 changer silently ignores some mode changes, so the app logs a notice when
 a mode doesn't take. **Best and Program can't be set over PC-Link at
 all** (CONFIRMED v1.6.4/v1.6.6: ignored while playing, while stopped, and
-with a list stored, although both work from the remote), so they're left
-out of the dropdown.
+with a list stored, although both work from the remote), and **neither
+can any random variant** (v1.6.7), though the Random button reaches
+those. So the dropdown offers only Track, Music Type and Userfile.
 The userfile param is CONFIRMED as a bit (#3 -> `0x04`, v1.6.2). See
 `CHANGELOG.md`'s v1.6.1/v1.6.2 entries and README "Honest gaps" #15.
 

@@ -234,6 +234,21 @@ MODE_NAMES = {
 }
 
 
+# What each press of the Random button (DoAction RANDOM_MODE) moves to,
+# from the current mode. CONFIRMED on real hardware (v1.6.7, InfoEvent
+# after each press). Userfile Random All (0x09) never came up -- Userfile
+# only toggles to Random One and back.
+RANDOM_BUTTON_CYCLE = {
+    Mode.TRACK: Mode.TRACK_RANDOM_ONE,
+    Mode.TRACK_RANDOM_ONE: Mode.TRACK_RANDOM_ALL,
+    Mode.TRACK_RANDOM_ALL: Mode.TRACK,
+    Mode.GENRE: Mode.GENRE_RANDOM_ALL,
+    Mode.GENRE_RANDOM_ALL: Mode.GENRE,
+    Mode.USERFILE: Mode.USERFILE_RANDOM_ONE,
+    Mode.USERFILE_RANDOM_ONE: Mode.USERFILE,
+}
+
+
 # Per cd_changemode.html / cd_infoevent.html: ChangeMode's (and
 # InfoEvent's) `param` byte is a genre in the Music Type modes and a
 # userfile in the Userfile modes; unused otherwise.
@@ -740,6 +755,19 @@ def decode_disc_event(data: bytes) -> dict:
 
 def decode_door_event(data: bytes) -> dict:
     return {"door_open": bool(data[0])}
+
+
+def is_placeholder_text(text: str) -> bool:
+    """True for a TextData/LongTextData entry that holds no real title.
+
+    Seen on real hardware (v1.6.7): a TrackNames read of a 10-track disc
+    also returned indexes 11-20 whose text was a single 0x01 byte --
+    apparently unused entries in the changer's 20-title-per-disc table.
+    Treated as "no title": any non-empty text made only of control
+    characters. (An empty string is left alone -- it already means "no
+    name" everywhere else in the app.)
+    """
+    return bool(text) and all(ord(ch) < 0x20 for ch in text)
 
 
 def decode_text_data(data: bytes) -> dict:

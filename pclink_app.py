@@ -130,7 +130,12 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # v1.6.6 -- Program mode CONFIRMED not settable via ChangeMode either (a
 # stored program plays from the remote, but 4 app requests -- playing and
 # stopped -- were all ignored). Left out of the dropdown like Best.
-APP_VERSION = "1.6.6"
+# v1.6.7 -- all five random variants CONFIRMED ignored via ChangeMode too;
+# the Random button reaches them instead. Dropdown is now Track / Music
+# Type / Userfile only, with an on-screen hint. Placeholder track titles
+# (text that's only control characters, e.g. '\x01') are no longer cached
+# as names.
+APP_VERSION = "1.6.7"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -258,7 +263,18 @@ MODE_NAME_TO_CODE = {name: code for code, name in proto.MODE_NAMES.items()}
 #   Best (v1.6.4): remote-started Best reports mode=4.
 #   Program (v1.6.6): remote-started program reports mode=3, with the
 #   InfoEvent `program` byte stepping 1, 2, ... through the program.
-CHANGE_MODE_UNSUPPORTED = frozenset({proto.Mode.BEST, proto.Mode.PROGRAM})
+#   Random variants (v1.6.7): all five ignored via ChangeMode, but the
+#   Random button (DoAction RANDOM_MODE) reaches them -- see
+#   RANDOM_BUTTON_CYCLE in pclink_protocol.py.
+CHANGE_MODE_UNSUPPORTED = frozenset({
+    proto.Mode.BEST,
+    proto.Mode.PROGRAM,
+    proto.Mode.TRACK_RANDOM_ONE,
+    proto.Mode.TRACK_RANDOM_ALL,
+    proto.Mode.GENRE_RANDOM_ALL,
+    proto.Mode.USERFILE_RANDOM_ONE,
+    proto.Mode.USERFILE_RANDOM_ALL,
+})
 
 
 def change_mode_choices() -> list[str]:
@@ -540,6 +556,10 @@ class App(tk.Tk):
             mode_frame, from_=1, to=8, textvariable=self.mode_userfile_var, width=4, state="readonly",
         )
         self.mode_userfile_spin.grid(row=1, column=3, sticky="w", padx=4, pady=(4, 0))
+        ttk.Label(
+            mode_frame, foreground="gray",
+            text="Random: set a mode, then use the Random button. Best/Program: remote only.",
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(4, 0))
         self._update_mode_param_widgets()
 
         query_frame = ttk.Frame(transport_frame)
@@ -976,7 +996,9 @@ class App(tk.Tk):
         elif frame.command in (proto.CMD_TEXT_DATA, proto.CMD_LONG_TEXT_DATA):
             p = frame.payload
             index = p.get("index", p.get("track"))
-            self._log(f"Text: slot={p.get('slot')} index={index} -> {p.get('text')!r}")
+            text = p.get("text")
+            note = "  (placeholder: no title stored)" if proto.is_placeholder_text(text or "") else ""
+            self._log(f"Text: slot={p.get('slot')} index={index} -> {text!r}{note}")
             self._cache_name(p)
 
     def _note_current_position(self, slot, track):
@@ -1007,6 +1029,11 @@ class App(tk.Tk):
         text = text_payload.get("text", "")
         if slot is None:
             return
+        # Filler entries (e.g. '\x01' for unused track-title slots, v1.6.7)
+        # mean "no title": store them as empty so they never show up as a
+        # name, and so they overwrite rather than leave a stale real name.
+        if proto.is_placeholder_text(text):
+            text = ""
 
         if info_type == proto.InfoType.DISC_NAMES:
             self._disc_name_cache[slot] = text
@@ -1020,7 +1047,11 @@ class App(tk.Tk):
             # conversion needed.
             track = text_payload.get("index", text_payload.get("track"))
             if track is not None:
-                self._track_name_cache.setdefault(slot, {})[track] = text
+                tracks = self._track_name_cache.setdefault(slot, {})
+                if text:
+                    tracks[track] = text
+                else:
+                    tracks.pop(track, None)
         else:
             return  # artist name / userfile names etc. -- not shown in status panel
 

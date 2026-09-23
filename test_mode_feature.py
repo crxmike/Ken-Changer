@@ -205,10 +205,8 @@ class TestBestModeUnsupported(unittest.TestCase):
         self.assertIn(proto.Mode.BEST, CHANGE_MODE_UNSUPPORTED)
         self.assertNotIn("Best Mode", change_mode_choices())
 
-    def test_every_other_mode_still_offered(self):
-        expected = [proto.MODE_NAMES[c] for c in sorted(proto.MODE_NAMES)
-                    if c not in (proto.Mode.BEST, proto.Mode.PROGRAM)]
-        self.assertEqual(change_mode_choices(), expected)
+    def test_dropdown_offers_only_the_confirmed_modes(self):
+        self.assertEqual(change_mode_choices(), ["Track Mode", "Music Type Mode", "Userfile Mode"])
 
     def test_best_still_decoded_when_started_from_the_remote(self):
         p = proto.decode_info_event(bytes.fromhex("03 00 03 01 17 01 00 04 00"))
@@ -270,6 +268,48 @@ class TestProgramModeUnsupported(unittest.TestCase):
     def test_track_mode_from_the_app_still_worked_in_between(self):
         p = proto.decode_info_event(bytes.fromhex("02 00 04 00 17 04 00 00 00"))
         self.assertEqual((p["mode"], p["program"]), (proto.Mode.TRACK, 0))
+
+
+class TestRandomModesSession(unittest.TestCase):
+    """Seventh real-hardware session (2026-09-22): every random variant
+    ignored via ChangeMode; the Random button reaches them instead."""
+
+    IGNORED = [  # (mode name, genre, userfile, exact frame sent)
+        ("Track Mode (Random One)", "", 1, "02 0c 02 00 01 00 f1"),
+        ("Track Mode (Random All)", "", 1, "02 0c 02 00 02 00 f0"),
+        ("Music Type Mode (Random All)", "Alternative Rock", 1, "02 0c 02 00 06 03 e9"),
+        ("Userfile Mode (Random One)", "", 1, "02 0c 02 00 08 01 e9"),
+        ("Userfile Mode (Random All)", "", 1, "02 0c 02 00 09 01 e8"),
+    ]
+
+    def test_ignored_requests_were_correctly_encoded(self):
+        for name, genre, userfile, wire in self.IGNORED:
+            payload, _ = build_change_mode_request(name, genre, userfile)
+            self.assertEqual(proto.encode_frame(proto.CMD_CHANGE_MODE, payload), bytes.fromhex(wire))
+
+    def test_random_variants_left_out_of_the_dropdown(self):
+        for name, *_ in self.IGNORED:
+            self.assertIn(MODE_NAME_TO_CODE[name], CHANGE_MODE_UNSUPPORTED)
+
+    def test_random_button_cycle_matches_the_logged_infoevents(self):
+        # (mode before the press, InfoEvent after it), in log order.
+        logged = [
+            (proto.Mode.USERFILE, "03 00 07 01 17 01 01 08 00"),
+            (proto.Mode.USERFILE_RANDOM_ONE, "03 00 07 01 17 01 01 07 00"),
+            (proto.Mode.GENRE, "01 00 0c 01 03 00 00 06 00"),
+            (proto.Mode.GENRE_RANDOM_ALL, "01 00 0c 01 03 00 00 05 00"),
+            (proto.Mode.TRACK, "01 00 08 00 03 00 00 01 00"),
+            (proto.Mode.TRACK_RANDOM_ONE, "03 00 01 00 17 01 00 02 00"),
+            (proto.Mode.TRACK_RANDOM_ALL, "03 00 01 00 17 01 00 00 00"),
+        ]
+        for before, wire in logged:
+            after = proto.decode_info_event(bytes.fromhex(wire))["mode"]
+            self.assertEqual(proto.RANDOM_BUTTON_CYCLE[before], after)
+
+    def test_repeat_button_toggles_repeat(self):
+        on = proto.decode_info_event(bytes.fromhex("03 00 01 01 17 01 01 07 01"))
+        off = proto.decode_info_event(bytes.fromhex("03 00 01 01 17 01 01 07 00"))
+        self.assertEqual((on["repeat"], off["repeat"]), (True, False))
 
 
 if __name__ == "__main__":

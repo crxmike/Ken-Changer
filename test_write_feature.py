@@ -65,6 +65,7 @@ if "serial" not in sys.modules:
 import pclink_protocol as proto
 import pclink_link as link_mod
 from pclink_link import PCLinkConnection, PCLinkNak, PCLinkTimeout, PCLinkWriteUnconfirmed
+import pclink_app
 from pclink_app import gather_disc_data_write_items
 
 
@@ -684,6 +685,49 @@ class TestOrdinarySendRegression(unittest.TestCase):
         t.join(timeout=3)
         self.assertFalse(t.is_alive())
         self.assertEqual(errors, [])
+
+
+class TestPlaceholderTrackTitles(unittest.TestCase):
+    """v1.6.7, real hardware: a TrackNames read of slot 3 (10 tracks) also
+    returned indexes 11-20 with a lone 0x01 byte as text -- filler, not a
+    title. These must not end up cached as track names."""
+
+    # Exact frames from the log (slot 3, index 10 real; index 11 filler).
+    REAL = "02 fe 0e 00 03 00 0a 01 01 17 00 43 65 69 6c 69 6e 67 13"
+    FILLER = "02 fe 08 00 03 00 0b 01 01 17 00 01 d2"
+
+    def _payload(self, frame_hex):
+        raw = bytes.fromhex(frame_hex)
+        return proto.decode_text_data(raw[4:-1])  # strip STX/cmd/len and checksum
+
+    def _fake_app(self):
+        return types.SimpleNamespace(
+            _disc_name_cache={}, _track_name_cache={}, _current_slot=None,
+            _update_name_labels=lambda: None, _refresh_disc_data_from_changer=lambda: None,
+        )
+
+    def test_is_placeholder_text(self):
+        self.assertTrue(proto.is_placeholder_text(""))
+        self.assertTrue(proto.is_placeholder_text(""))
+        self.assertFalse(proto.is_placeholder_text(""))
+        self.assertFalse(proto.is_placeholder_text("Ceiling"))
+        self.assertFalse(proto.is_placeholder_text("a"))
+
+    def test_logged_filler_frame_decodes_to_0x01(self):
+        p = self._payload(self.FILLER)
+        self.assertEqual((p["slot"], p["index"], p["text"]), (3, 11, ""))
+
+    def test_filler_not_cached_real_name_kept(self):
+        app = self._fake_app()
+        pclink_app.App._cache_name(app, self._payload(self.REAL))
+        pclink_app.App._cache_name(app, self._payload(self.FILLER))
+        self.assertEqual(app._track_name_cache[3], {10: "Ceiling"})
+
+    def test_filler_clears_a_stale_cached_name(self):
+        app = self._fake_app()
+        app._track_name_cache[3] = {11: "Old Title From Another Disc"}
+        pclink_app.App._cache_name(app, self._payload(self.FILLER))
+        self.assertNotIn(11, app._track_name_cache[3])
 
 
 if __name__ == "__main__":

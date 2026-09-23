@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.6.7 -- Random modes can't be set via ChangeMode; the Random button reaches them
+
+The user tried every random variant from the Play Mode dropdown on a real
+CD-425M (2026-09-22, raw-byte log). **All five were ACK'd and then
+ignored**, while both stopped and playing: Track Random One (`02 0c 02 00
+01 00 f1`), Track Random All (`... 02 00 f0`), Music Type Random All
+(`... 06 03 e9`), Userfile Random One (`... 08 01 e9`) and Userfile Random
+All (`... 09 01 e8`). The plain modes kept working in between.
+
+**The Random button (`DoAction` `0xD4A1`) does reach them.** Each press
+moves to the next random option for the current mode, CONFIRMED from the
+`InfoEvent` after every press (`proto.RANDOM_BUTTON_CYCLE`):
+
+- Track → Track Random One → Track Random All → Track
+- Music Type → Music Type Random All → Music Type
+- Userfile → Userfile Random One → Userfile (Userfile Random All, `0x09`,
+  never came up)
+
+Also confirmed: **the Repeat button toggles `InfoEvent`'s `repeat`
+flag**, on and then off. And **an empty userfile is silently ignored**:
+`ChangeMode(Userfile #2)` with no disc tagged #2 produced no mode change,
+and the 5-second notice caught it.
+
+**Changed:** all five random variants join Best and Program in
+`CHANGE_MODE_UNSUPPORTED`. The dropdown now offers only Track, Music Type
+and Userfile modes, the three that work. A gray hint under it says to use
+the Random button for random play, and the remote for Best/Program.
+Tests: `TestRandomModesSession`.
+
+**Fixed: placeholder track titles.** One `TrackNames` read of slot 3 (10
+tracks) returned extra entries for indexes 11-20 whose text was a single
+`0x01` byte, apparently unused entries in the changer's per-disc title
+table. That's 20 in total, matching the owner's manual's 20-track-title
+limit. A second read of the same slot a few minutes later returned only
+the 10 real tracks. New `proto.is_placeholder_text()` treats any
+non-empty text made only of control characters as "no title".
+`_cache_name` now stores those as empty, dropping any cached name for
+that track instead of keeping a stale one, and the log line marks them
+"(placeholder: no title stored)". The user had shuffled discs between
+slots earlier in the session (see next point), which may be related, but
+the exact trigger isn't known: the entries appeared on slot 3, which
+wasn't one of the moved slots. Tests: `TestPlaceholderTrackTitles` in
+`test_write_feature.py`.
+
+**Confirmed: disc data follows the disc, not the slot.** The user moved
+the disc from slot 4 to slot 1, and its title, track names and genre
+(Alternative Rock) all read back from slot 1. This matches the owner's
+manual (p. 27: data is stored per disc ID for up to 210 discs).
+
 ## v1.6.6 -- Program mode can't be set over PC-Link either; removed from the dropdown
 
 The user stored a program from the remote and tested on a real CD-425M

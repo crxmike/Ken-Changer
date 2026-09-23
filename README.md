@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.6.6 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.6.7 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre, all confirmed working against
 real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Querying gnudb.org is wired up but
@@ -217,6 +217,12 @@ testing, so treat them as the manufacturer's claims until confirmed:
 - **Stored data is keyed to the disc, not the slot** (p. 27): the changer
   keeps titles, music types and user files for up to 210 discs by each
   CD's own ID, so a disc keeps its data when moved to another slot.
+  **Confirmed on real hardware (v1.6.7):** a disc moved from slot 4 to
+  slot 1 kept its title, track names and genre.
+- **Up to 20 track titles per disc** shows up on the wire too: one read
+  of a 10-track disc returned entries 11-20 with a single `0x01` byte as
+  their text. The app treats text made only of control characters as "no
+  title" (`proto.is_placeholder_text`).
 - **The front-panel menu lists 26 music types** (p. 31), while
   `proto.GENRES` has 29 codes: it adds Unassigned, Unknown and Erotic,
   which the manual's list leaves out.
@@ -580,7 +586,7 @@ exactly what's happening):
    all four write approaches and the v1.5.1 bug.
 
 15. **Play mode selector (`ChangeMode`) -- CONFIRMED against real
-   hardware for Track, Music Type and Userfile modes (v1.6.1-v1.6.6).**
+   hardware for Track, Music Type and Userfile modes (v1.6.1-v1.6.7).**
    - `ChangeMode` is ACK'd with no reply data, and the changer reports
      the new mode in its next `InfoEvent`. Mode changes made on the
      remote show up in the status panel too.
@@ -606,12 +612,19 @@ exactly what's happening):
    - **`InfoEvent`'s `param` in Music Type mode** reads `0x00`, not the
      selected genre (seen with both Rock and Alternative Rock), so the
      Mode Param row shows only the raw byte there.
+   - **Random modes can't be set via `ChangeMode` either (v1.6.7)**, but
+     the Random button reaches them. From Track it goes Track → Random
+     One → Random All → Track; from Music Type, Music Type ↔ Random All;
+     from Userfile, Userfile ↔ Random One. The Repeat button toggles
+     `repeat`. The dropdown now offers only Track, Music Type and Userfile
+     modes, with an on-screen hint pointing to the Random button and the
+     remote.
+   - **An empty userfile is silently ignored**, the same way (v1.6.7).
    - **Program mode can't be set over PC-Link either (v1.6.6).** A
      stored program plays from the remote (`mode=3`, with the `program`
      byte stepping 1, 2, ... through it), but the app's
      `ChangeMode(Program)` was ignored four times, both while Playing and
-     while Stopped. Like Best, it's left out of the dropdown, so the
-     dropdown offers only Track, Music Type and Userfile modes.
+     while Stopped. Like Best, it's left out of the dropdown.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.
