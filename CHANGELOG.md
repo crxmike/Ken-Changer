@@ -1,5 +1,178 @@
 # Changelog
 
+## v1.8.7 -- gnudb genre matching ignores case, hyphens and "&"/"and"
+
+In the user's screenshot, "Copy gnudb -> Custom" left the Custom genre
+dropdown blank for gnudb's "folk rock". That's correct, since the
+changer has no Folk Rock. But the copy needed an exact, case-sensitive
+match, and gnudb genres are free text and often lowercase. So "rock" or
+"jazz" would have been left blank too, even though the changer has Rock
+and Jazz.
+
+`match_changer_genre()` now matches ignoring case, hyphens vs. spaces,
+extra spaces and "&" vs. "and": "rock" -> Rock, "hip-hop" -> Hip Hop,
+"rhythm and blues" -> Rhythm & Blues. It still needs the same words:
+"folk rock", "Alternative" and "R&B" stay blank rather than being
+forced into the nearest-sounding genre, as before. No two changer
+genres collide under these rules (tested). This only changes which
+dropdown value gets pre-filled; the genre write path itself (confirmed
+v1.5.1) is untouched. Not yet tried in the app on real hardware.
+
+Tests: `TestGenreMatch` in `test_gnudb_client.py`.
+
+## v1.8.6 -- Exact gnudb DiscID matches aren't expected on the CD-425M (known limitation)
+
+The user looked up several more discs on the real CD-425M (2026-09-23).
+Every one came back with inexact matches only, never an exact one. The
+user's conclusion, adopted here: it comes from how the changer reports
+the TOC. Every `DiscTOC` time has `frames = 0`, so the changer gives
+whole seconds only.
+
+Why that breaks exact matches: the CDDB1 DiscID itself only uses whole
+seconds, so a TOC that just dropped the frames would still produce the
+right ID. Getting it wrong on every disc means the changer's seconds
+aren't the true `floor(frames / 75)` values. Most likely it rounds to
+the nearest second, so some track starts come out one second late and
+shift the checksum byte. v1.8.5's Henhouse candidates fit this: same
+length field, different checksum. The app can't correct for it without
+the real frame offsets, which this unit doesn't send. Trying every
++/-1 s combination would mean thousands of queries against a
+rate-limited server.
+
+So the inexact-match path (code `211` -> picker, v1.8.3) is the normal
+way lookups work on this changer. It has found the right album every
+time so far. The only code change is the log line, which now says "no
+exact match (normal for this changer -- its TOC has whole seconds
+only)" so it doesn't read like an error.
+
+Not established: whether the changer rounds or does something else.
+That would need a disc whose real frame-accurate TOC is known (e.g.
+ripped on a PC) to compare against the changer's.
+
+## v1.8.5 -- ASCII folding CONFIRMED; what gnudb's candidate DiscIDs show
+
+The user retested v1.8.4 on a real CD-425M (2026-09-23, raw-byte log,
+slot 1 again):
+
+- **ASCII folding works.** After "Copy gnudb -> Custom", track 4 went
+  out as `44 6f 6e 27 74 ...` ("Don't Wake Daddy", `0x27`) and track 10
+  as "Let's Stay Engaged". Both read back byte-identical, replacing the
+  `Don?t` / `Let?s` that v1.8.3 had stored. All 13 writes ACK'd, and
+  genre and userfiles `0x07` were kept again.
+- **The candidates' DiscIDs, as logged by v1.8.4:**
+
+  | DiscID | Checksum | Length (s) | Last byte |
+  |---|---|---|---|
+  | ours `930c540c` | `93` (147) | `0c54` (3156) | `0c` (12 tracks) |
+  | `data 8e0c548a` | `8e` (142) | `0c54` (3156) | `8a` |
+  | `data 900c5484` | `90` (144) | `0c54` (3156) | `84` |
+  | `data 900c568e` | `90` (144) | `0c56` (3158) | `8e` |
+
+  Two candidates share our length exactly, and the third is 2 s longer
+  (probably another pressing). None ends in `0c`, though. In a standard
+  CDDB1 ID the last byte is the track count, and 132-142 tracks is
+  impossible, so these three entries' IDs aren't standard CDDB1 IDs for
+  a 12-track disc. All three are also filed under `data` rather than a
+  music category. gnudb.org's protocol page doesn't say how IDs like
+  these arise. The likely explanation is that gnudb simply has no
+  standard-ID entry for this pressing, so no exact match was possible,
+  and our ID may well be correct. That's unconfirmed: the checksums
+  differ from ours too (142/144 vs 147). The next step is a second, more
+  common disc, to see whether our ID ever gets an exact match (code 200
+  or 210).
+- **The 25-character disc-name warning shows up as intended.** The
+  user's screenshot of the v1.8.4 Write to Changer dialog shows: "the
+  disc name is 44 characters; the changer keeps only the first 25: 'The
+  Tragically Hip / Trou'", matching what the changer then stored. This
+  confirms v1.8.3's `disc_name_length_warning`.
+
+No code change (version bump only). Tests:
+`TestRealFoldedWriteSession` in `test_gnudb_client.py`.
+
+## v1.8.4 -- gnudb.org round-trip CONFIRMED live; ASCII folding for gnudb text; candidate DiscIDs logged
+
+The user ran v1.8.3 against the live gnudb.org server and a real CD-425M
+(2026-09-23, raw-byte log, slot 1, The Tragically Hip's *Trouble at the
+Henhouse*):
+
+- **The lookup works end to end.** The query for our DiscID `930c540c`
+  (12 tracks, 3156 s) got no exact match but 3 inexact ones (`211`). The
+  new v1.8.3 path sent them to the picker instead of loading one. The
+  user picked the right album, `read` loaded 12 track names, and "Copy
+  gnudb -> Custom" + Write to Changer wrote all 13 values (ACK'd, re-read,
+  genre Alternative Rock and userfiles `0x07` kept). v1.8.3's picker and
+  inexact-match log line are confirmed. Rate-limit handling wasn't
+  exercised (no block this time).
+- **The changer cuts a long disc name to 25 characters when writing.**
+  The 44-character "The Tragically Hip / Trouble at the Henhouse" went out
+  whole (`02 fe 33 00 ...`), was ACK'd, and read back as
+  `'The Tragically Hip / Trou'`. That's the manual's p. 28 limit and it
+  fits v1.8.3's warning, though the log doesn't show whether the dialog
+  said so.
+- **Curly apostrophes were stored as `?`.** gnudb's "Don’t Wake Daddy"
+  and "Let’s Stay Engaged" use U+2019, which `encode_text_data` turns
+  into `?` (`0x3f` in the logged frame). Should be fixed (not yet tested
+  on hardware): "Copy gnudb -> Custom" now runs gnudb text through
+  `ascii_fold()`, which maps curly quotes, dashes and ellipses to ASCII
+  and drops accents (Beyoncé -> Beyonce), so the Custom column shows
+  exactly what will be stored. The changer can store a plain apostrophe:
+  its own handshake reply is "I'm CD-425M". Re-copying and re-writing
+  slot 1 should turn its two `?` back into apostrophes.
+- **Our DiscID wasn't an exact match. Cause still unknown.** Every
+  `DiscTOC` time on this unit has `frames = 0`: the changer gives whole
+  seconds only. The frame offsets we send are therefore only accurate to
+  a second. The DiscID itself only uses seconds, so it's right as long as
+  the changer truncates rather than rounds. The log didn't show the
+  candidates' DiscIDs, so the app now logs each one
+  (`gnudb_match_summary`) and shows it in the picker. The next lookup
+  will show whether gnudb's ID for the same disc differs from ours (e.g.
+  another pressing, or a rounded second).
+
+Tests (`test_gnudb_client.py`, `TestRealLookupSession`, built from this
+log's frames): our DiscID from the real TOC, frames always 0, the disc
+name frame byte-for-byte and its 25-character read-back, and the track 4
+frame with `?` vs. the folded apostrophe. Also `TestAsciiFold` and
+`TestMatchSummary`.
+
+## v1.8.3 -- gnudb.org lookup: tests, inexact matches, rate-limit errors, disc-name length warning
+
+Prep for the live gnudb.org test (still UNCONFIRMED; nothing here has
+touched the real server). Tests: `test_gnudb_client.py` (32, network
+mocked).
+
+- **gnudb tests are now committed.** Earlier docs said the parser was
+  checked against gnudb.org's documented example responses, but no test
+  file for it was ever committed. `test_gnudb_client.py` covers the
+  request (cmd / hello / `proto=6` / User-Agent, HTTP before HTTPS), the
+  HTTPS fallback (including the bare `TimeoutError` case from the user's
+  earlier traceback), query codes 200/210/211/202 and error codes, and
+  `read()` (DTITLE split, `TTITLE0` = track 1, continuation lines). The
+  sample responses follow the documented format but weren't captured
+  from the real server.
+- **A lone inexact match no longer loads by itself.** A single match used
+  to be read immediately even if it came from a `211` ("inexact
+  matches") reply, which is the server's guess and can be a different
+  album. `GnudbMatch` now has `exact`, and only a single exact match
+  loads straight away (`gnudb_auto_read_match`). Otherwise the picker
+  opens, with a warning when the matches are inexact.
+- **Rate limiting is reported as rate limiting.** An HTTP 403/429/503 now
+  raises `GnudbRateLimited` (a `GnudbError` subclass) with a "wait and
+  try again" message. Any HTTP error status (the server answered) now
+  stops at once instead of retrying over HTTPS, so a throttled IP doesn't
+  get a second request. Before, a block looked like a generic "Couldn't
+  reach gnudb.org". Which status gnudb.org actually sends when it blocks
+  is still unknown.
+- **Non-CDDB replies get a clear error.** If the body isn't a CDDB
+  response (e.g. an HTML block page served as HTTP 200), the error says so
+  and quotes the start of it, instead of "query failed: <!DOCTYPE html>".
+- **Write to Changer warns about long disc names.** "Copy gnudb -> Custom"
+  fills the disc name with "Artist / Album", which is often over the
+  manual's 25-character disc title limit (p. 28). Slot 4's disc name had
+  already come back cut at exactly 25. The confirmation now says so and
+  shows the 25 characters the changer would keep (`disc_name_length_warning`).
+  It warns rather than blocks. Track names aren't checked because their
+  limit isn't documented.
+
 ## v1.8.2 -- Name writes keep a disc's userfiles, CONFIRMED; program auto-play confirmed
 
 The user tested the last open item on a real CD-425M (2026-09-23,

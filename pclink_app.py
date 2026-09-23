@@ -19,6 +19,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import unicodedata
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
@@ -151,7 +152,27 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # switching back to Track mode clears the program (as the manual says).
 # v1.8.2 -- CONFIRMED that name writes keep a disc's userfiles (a track
 # name written on a disc in #1-#3 left it in #1-#3). Docs/tests only.
-APP_VERSION = "1.8.2"
+# v1.8.3 -- gnudb.org lookup hardening, NOT yet tried against the live
+# server: a lone inexact (211) match goes to the picker instead of loading
+# silently; HTTP 403/429/503 is reported as rate-limited (and isn't retried
+# over HTTPS); an HTML/non-CDDB body gets a clear error; Write to Changer
+# warns when the disc name is over 25 characters. Tests:
+# test_gnudb_client.py.
+# v1.8.4 -- the gnudb.org round-trip is CONFIRMED live (v1.8.3 session:
+# no exact match for our DiscID 930c540c, 3 inexact candidates, picked
+# one, read 12 tracks, wrote them to the changer). "Copy gnudb -> Custom"
+# now folds text to ASCII (curly apostrophes had been stored as '?'), and
+# the log lists each candidate's DiscID so ours can be compared.
+# v1.8.5 -- ASCII folding CONFIRMED on real hardware (tracks 4 and 10 of
+# slot 1 now store a plain apostrophe). Candidate DiscIDs logged: none is
+# a standard CDDB1 ID for this 12-track disc. Docs/tests only.
+# v1.8.6 -- exact gnudb DiscID matches aren't expected on this changer
+# (user tested several discs: all inexact). The TOC's frames are always
+# 0, so the inexact-match log line now says that's normal.
+# v1.8.7 -- "Copy gnudb -> Custom" matches gnudb's genre to the changer's
+# genre list ignoring case, hyphens and '&'/'and' ("rock" -> Rock,
+# "hip-hop" -> Hip Hop). Different words still stay blank.
+APP_VERSION = "1.8.7"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -175,6 +196,73 @@ def gather_disc_data_write_items(disc_data_rows: list) -> list:
     return items
 
 
+# Owner's manual p. 28. Real hardware already showed it: slot 4's disc name
+# read back cut off at exactly 25 characters ('The Hip / Trouble at the ').
+# Track-name limits aren't documented, so only the disc name is checked.
+DISC_TITLE_MAX = 25
+
+
+def disc_name_length_warning(write_items: list) -> str:
+    """A note for the Write to Changer confirmation when the disc name
+    (index 0) is longer than DISC_TITLE_MAX -- e.g. a gnudb.org
+    "Artist / Album" copied into Custom. Warns rather than blocks, since
+    the changer just keeps the first 25 characters. Takes
+    gather_disc_data_write_items()-shaped items (merged 5-tuples work too).
+    Returns "" when there's nothing to warn about."""
+    for item in write_items:
+        index, text = item[0], item[1]
+        if index == 0 and len(text) > DISC_TITLE_MAX:
+            return (
+                f"\n\nNote: the disc name is {len(text)} characters; the changer keeps "
+                f"only the first {DISC_TITLE_MAX}: {text[:DISC_TITLE_MAX]!r}. "
+                f"Shorten it in the Custom column first if you'd rather choose the cut."
+            )
+    return ""
+
+
+# Typographic punctuation gnudb.org entries often use, mapped to the plain
+# ASCII the changer can store. Without this, encode_text_data turns each
+# one into '?': a real v1.8.3 write of gnudb's 'Don’t Wake Daddy' read
+# back as 'Don?t Wake Daddy'. The changer does store a plain apostrophe
+# (0x27): its own handshake reply is "I'm CD-425M".
+_ASCII_PUNCTUATION = {
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+    "“": '"', "”": '"', "„": '"', "″": '"',
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "−": "-",
+    "…": "...", " ": " ", "×": "x",
+}
+
+
+def ascii_fold(text: str) -> str:
+    """Closest plain-ASCII version of `text` for writing to the changer:
+    curly quotes/dashes/ellipsis become ASCII punctuation and accented
+    letters lose their accents ('Beyoncé' -> 'Beyonce'). Anything still
+    not ASCII becomes '?', the same as encode_text_data would do anyway."""
+    text = "".join(_ASCII_PUNCTUATION.get(c, c) for c in text)
+    text = "".join(
+        c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
+    )
+    return text.encode("ascii", errors="replace").decode("ascii")
+
+
+def gnudb_match_summary(matches: list) -> str:
+    """One log line per candidate with its category and DiscID, so a real
+    session shows how the server's DiscIDs compare with ours."""
+    return "; ".join(
+        f"[{m.category} {m.discid}{'' if m.exact else ', inexact'}] {m.title}" for m in matches
+    )
+
+
+def gnudb_auto_read_match(matches: list):
+    """The match to load straight away, or None to show the picker. Only a
+    single EXACT match is loaded without asking; a lone inexact (code 211)
+    match is the server's guess and can be a different album, so the user
+    confirms it in the picker first."""
+    if len(matches) == 1 and matches[0].exact:
+        return matches[0]
+    return None
+
+
 def build_genre_write_frames(slot: int, genre_code: int) -> tuple[bytes, bytes]:
     """Builds the (request_data, follow_up_data) byte pairs for a
     standalone Action.SET_DISC_GENRE write -- kept around (same spirit as
@@ -196,6 +284,25 @@ def build_genre_write_frames(slot: int, genre_code: int) -> tuple[bytes, bytes]:
     )
     follow_up_data = proto.encode_disc_genre(slot=slot, genre=genre_code)
     return request_data, follow_up_data
+
+
+def _genre_key(text: str) -> str:
+    """Spelling-insensitive key: case, hyphens/spaces and '&' vs 'and'."""
+    words = (text or "").lower().replace("-", " ").replace("&", " and ").split()
+    return " ".join(words)
+
+
+_GENRE_BY_KEY = {_genre_key(name): name for name in proto.GENRE_NAME_TO_CODE}
+
+
+def match_changer_genre(text: str) -> str:
+    """The changer genre name (a key of proto.GENRE_NAME_TO_CODE) that
+    `text` spells, or "" if none. gnudb genres are free text and often
+    lowercase ("rock", "hip-hop"), so this ignores case, hyphens vs spaces
+    and '&' vs 'and' (v1.8.7). It's still an exact match on the words:
+    "folk rock" or "Alternative" don't match anything and stay blank
+    rather than being forced into the nearest-sounding genre."""
+    return _GENRE_BY_KEY.get(_genre_key(text), "")
 
 
 def gather_genre_write_item(genre_custom_text: str) -> int | None:
@@ -1804,6 +1911,9 @@ class App(tk.Tk):
                 discid_result["total_seconds"],
                 hello,
             )
+        except gnudb_client.GnudbRateLimited as exc:
+            self._log(f"gnudb.org query: rate-limited. {exc}")
+            return
         except gnudb_client.GnudbError as exc:
             self._log(f"gnudb.org query failed: {exc}")
             return
@@ -1812,17 +1922,35 @@ class App(tk.Tk):
             self._log("gnudb.org: no match found for this disc.")
             return
 
-        if len(matches) == 1:
-            self._log(f"gnudb.org: found a match -- {matches[0].title}")
-            self._gnudb_read_worker(slot, matches[0], hello)
+        self._log(
+            f"gnudb.org candidates for our DiscID {discid_result['discid']}: "
+            + gnudb_match_summary(matches)
+        )
+        auto = gnudb_auto_read_match(matches)
+        if auto is not None:
+            self._log(f"gnudb.org: found an exact match -- {auto.title}")
+            self._gnudb_read_worker(slot, auto, hello)
             return
 
-        self._log(f"gnudb.org: found {len(matches)} possible matches -- pick one.")
+        if not matches[0].exact:
+            # The normal case on the CD-425M: its TOC gives whole seconds
+            # only (frames always 0), so our DiscID rarely matches exactly
+            # (v1.8.6, seen on every disc the user tried).
+            self._log(
+                f"gnudb.org: no exact match (normal for this changer -- its TOC "
+                f"has whole seconds only); {len(matches)} close match(es) -- "
+                "check it's the right album before picking."
+            )
+        else:
+            self._log(f"gnudb.org: found {len(matches)} possible matches -- pick one.")
         self.ui_queue.put(lambda: self._show_gnudb_match_picker(slot, matches, hello))
 
     def _gnudb_read_worker(self, slot: int, match: "gnudb_client.GnudbMatch", hello: str):
         try:
             disc = gnudb_client.read(match.category, match.discid, hello)
+        except gnudb_client.GnudbRateLimited as exc:
+            self._log(f"gnudb.org read: rate-limited. {exc}")
+            return
         except gnudb_client.GnudbError as exc:
             self._log(f"gnudb.org read failed: {exc}")
             return
@@ -1838,12 +1966,18 @@ class App(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Select a gnudb.org match")
         win.geometry("520x320")
-        ttk.Label(win, text="Multiple possible matches were found -- select one:").pack(
+        prompt = (
+            "Multiple possible matches were found -- select one:"
+            if all(m.exact for m in matches) else
+            "No exact match -- these are gnudb.org's closest guesses and may be\n"
+            "a different album or pressing. Select one only if it's right:"
+        )
+        ttk.Label(win, text=prompt, justify="left").pack(
             anchor="w", padx=8, pady=(8, 4)
         )
         listbox = tk.Listbox(win, width=76, height=12)
         for m in matches:
-            listbox.insert("end", f"[{m.category}] {m.title}")
+            listbox.insert("end", f"[{m.category} {m.discid}] {m.title}")
         listbox.pack(fill="both", expand=True, padx=8)
         if matches:
             listbox.selection_set(0)
@@ -1854,7 +1988,7 @@ class App(tk.Tk):
                 return
             chosen = matches[selection[0]]
             win.destroy()
-            self._log(f"Selected: {chosen.title}")
+            self._log(f"Selected: [{chosen.category} {chosen.discid}] {chosen.title}")
             threading.Thread(
                 target=self._gnudb_read_worker, args=(slot, chosen, hello), daemon=True
             ).start()
@@ -1958,7 +2092,7 @@ class App(tk.Tk):
             f"\n\nNote: genre will be written by re-sending the disc name "
             f"({final_items[0][1]!r}) with the genre attached."
             if genre_code is not None else ""
-        )
+        ) + disc_name_length_warning(final_items)
         if not messagebox.askyesno(
             "Write to Changer",
             f"Write {len(final_items)} value(s) to slot {slot} on the changer?\n\n"
@@ -2138,16 +2272,15 @@ class App(tk.Tk):
         var_key = "changer_var" if source == "changer" else "gnudb_var"
         for row in self._disc_data_rows:
             val = row[var_key].get()
+            if source == "gnudb":
+                val = ascii_fold(val)  # curly quotes etc. would be stored as '?'
             row["custom_var"].set(val if val and val != "-" else "")
 
         genre_source_var = self.genre_changer_var if source == "changer" else self.genre_gnudb_var
         genre_val = genre_source_var.get()
         # The Custom column's Genre control is a fixed dropdown (only the
-        # changer's own enum, per proto.GENRES) -- only copy over a value
-        # that's actually one of those names; free-text gnudb genres (e.g.
-        # "Alternative") that don't match exactly are left blank rather
-        # than silently forced into the nearest-sounding option.
-        self.genre_custom_var.set(genre_val if genre_val in proto.GENRE_NAME_TO_CODE else "")
+        # changer's own enum, per proto.GENRES) -- see match_changer_genre.
+        self.genre_custom_var.set(match_changer_genre(genre_val))
 
     def _clear_custom_data(self):
         for row in self._disc_data_rows:

@@ -15,8 +15,8 @@ confirmation had existed before but got lost to bad file management
 along with the UI wiring that used it; both are now recovered/rebuilt
 and reconfirmed -- see `CHANGELOG.md`'s v1.3.0 entry for the details (22
 writes against a real CD-425M, all read back matching, no quirks).
-gnudb.org querying is wired up but its live round-trip is still
-unconfirmed -- see "In progress" below. See `CHANGELOG.md` for the full
+gnudb.org querying is CONFIRMED live (v1.8.3 session; see v1.8.4 in
+`CHANGELOG.md`). See `CHANGELOG.md` for the full
 confirmed list.
 
 **v1.5.0/v1.5.1** -- reading/writing disc genre is CONFIRMED against real
@@ -82,13 +82,15 @@ Name writes keep a disc's userfiles too (v1.8.2, confirmed).
 
 - Nothing open on userfiles/programs. Untried corner: writing an empty
   program (to clear it).
-- **gnudb.org querying just got wired up** (query -> read -> populate the
-  Disc Data tab's "From gnudb.org" column) but hasn't been confirmed
-  against a live server response yet -- the user's IP got rate-limited by
-  gnudb.org during testing and is waiting for that to clear. The parsing
-  logic itself IS verified, against gnudb.org's own documented example
-  responses (see `gnudb_client.py` and the tests described in
-  `CHANGELOG.md`) -- what's unverified is only the live round-trip.
+- **gnudb.org: live round-trip CONFIRMED** (v1.8.3 session: query ->
+  inexact-match picker -> read -> write to the changer). Still open:
+  - Exact DiscID matches: a known limitation, not a bug (v1.8.6).
+    Every disc tried got inexact matches only, because the changer's TOC
+    is whole seconds only (`frames = 0`, probably rounded). The picker
+    is the normal path. Nothing further planned.
+  - ASCII folding of gnudb text: CONFIRMED (v1.8.5).
+  - The 25-character disc-name warning: CONFIRMED (v1.8.5 screenshot).
+  - Rate-limit handling (HTTP 403/429/503) hasn't met a real block yet.
 - **Deferred for now: a software fallback for "ALL DATA READ"** for users
   without a remote (see the caveat in `CHANGELOG.md`'s v1.2.0 entry). The
   idea, not yet implemented on purpose (explicitly held off per the
@@ -112,6 +114,9 @@ Name writes keep a disc's userfiles too (v1.8.2, confirmed).
   & Program tab; confirmed on real hardware (v1.7.1).
 - `test_userfile_program_write.py` -- tests for writing userfiles and
   programs; confirmed on real hardware (v1.8.1).
+- `test_gnudb_client.py` -- tests for the gnudb.org lookup (network
+  mocked, plus frames from the first live session); live round-trip
+  confirmed (v1.8.4).
 - `test_genre_feature.py` -- tests for the genre read/write feature;
   confirmed against real hardware as of v1.5.0 (writes fold into a
   `WRITE_NAME` write rather than a standalone action), including a

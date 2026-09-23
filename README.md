@@ -1,10 +1,10 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.8.2 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.8.7 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
-and programs, all confirmed working against real CD-425M hardware.** See `CHANGELOG.md` for what that covers and the
-history of fixes that got it there. Querying gnudb.org is wired up but
-its live round-trip is unconfirmed. Genre writing took four different
+and programs + gnudb.org lookup, all confirmed working against real
+CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
+history of fixes that got it there. Genre writing took four different
 approaches to get right -- it goes out folded into a `WRITE_NAME` write
 rather than the standalone `Action.SET_DISC_GENRE` action the protocol
 docs' own enum suggests, since three real-hardware attempts at that
@@ -97,7 +97,9 @@ python pclink_app.py
   preserved across disc navigation and data refreshes, so switching discs
   to check something and coming back doesn't lose whatever you were
   typing. "Copy Changer -> Custom" and "Copy gnudb -> Custom" seed
-  column 3 from either source as a starting point. A fixed **Genre**
+  column 3 from either source as a starting point. The gnudb copy
+  fills the genre dropdown only when gnudb's genre spells one of the
+  changer's, ignoring case, hyphens and "&"/"and" (v1.8.7). A fixed **Genre**
   row sits above the Disc Name/Track rows (genre is disc-level only --
   there's no per-track genre) -- its Custom column is a dropdown listing
   every value in the changer's fixed genre enum (`pclink_protocol.GENRES`)
@@ -192,7 +194,21 @@ worth knowing:
 - **Multiple matches**: if gnudb.org returns more than one candidate for a
   DiscID (this can genuinely happen -- DiscIDs aren't perfectly unique), a
   small picker window lists them for you to choose from before the full
-  entry is fetched.
+  entry is fetched. A single *inexact* match (code `211`, the server's
+  guess for an unknown DiscID) also goes to the picker, with a warning,
+  rather than loading on its own (v1.8.3).
+- **Rate limiting**: gnudb.org throttles IPs that send too many requests.
+  An HTTP 403/429/503 reply is logged as "rate-limited" and isn't retried
+  over HTTPS, so the server doesn't get a second request (v1.8.3). Wait
+  and try again later. An HTML page where a CDDB reply should be (e.g. a
+  block page) is reported as such too.
+- **Non-ASCII text**: the changer stores plain ASCII only, and anything
+  else is written as `?`. "Copy gnudb -> Custom" converts gnudb text to
+  the nearest ASCII first (curly quotes -> `'`/`"`, dashes -> `-`, accents
+  dropped, v1.8.4). **Confirmed on real hardware (v1.8.5).**
+- **Tests**: `test_gnudb_client.py`, with the network mocked, plus frames
+  from the first live session. **Live round-trip confirmed (v1.8.3
+  session).**
 
 ## Owner's manual notes
 
@@ -207,7 +223,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
 - **Title length: 25 characters for a disc title** (p. 28) **and for a
   user file name** (p. 35). A real read-back already fits this: slot 4's
   disc name came back as exactly 25 characters (`'The Hip / Trouble at
-  the '`). The Disc Data tab doesn't enforce this limit yet.
+  the '`). Write to Changer warns (v1.8.3, **confirmed** v1.8.5) when
+  the disc name is longer, showing the part the changer will keep. A
+  real 44-character write was ACK'd and stored as its first 25.
 - **Up to 20 track titles per disc** (p. 28, for titles entered by
   hand). It isn't known yet whether a `WRITE_NAME` for track 21+ is
   rejected, ignored or accepted. The app doesn't enforce this either.
@@ -271,8 +289,8 @@ testing, so treat them as the manufacturer's claims until confirmed:
   gitignored and not committed; see "Owner's manual notes" above.
 - `gnudb_client.py` -- minimal HTTP client for gnudb.org's CDDB-compatible
   query/read protocol (stdlib `urllib` only, no serial or Tkinter
-  dependency; independently testable, and tested against gnudb.org's own
-  documented example responses).
+  dependency; tested in `test_gnudb_client.py` against responses in
+  gnudb.org's documented format).
 
 ## Protocol summary (for reference)
 
@@ -411,10 +429,15 @@ exactly what's happening):
    the formula itself (cross-checked by re-deriving it independently), and
    that `DiscTOC`'s timecodes are absolute Red Book MSF including the
    standard 150-frame/2-second lead-in -- a real disc's track 1 was
-   observed starting at exactly `00:02`. Still not cross-checked against an
-   actual gnudb.org/freedb lookup for a disc with a known-correct ID (no
-   network access in the environment this was built in) -- if you look one
-   up and it doesn't match, that's the next thing to investigate.
+   observed starting at exactly `00:02`. **Known limitation: exact
+   gnudb matches aren't expected on this changer (v1.8.6).** Every disc
+   the user looked up got inexact matches only. The CD-425M's TOC times
+   always have `frames = 0` (whole seconds only), and its seconds evidently
+   aren't the true `floor(frames / 75)`, probably rounded, which shifts
+   the checksum byte. Without the real frame offsets the app can't
+   correct for this. The inexact-match picker is the normal lookup path,
+   and it has found the right album every time so far. See
+   `CHANGELOG.md` v1.8.5-v1.8.6.
 7. **Text data retrieval for multiple tracks.** `TextData`/`LongTextData`
    appear to be single-item replies (one track or one disc name per frame).
    Requesting "track names" for a whole disc may return one frame per track

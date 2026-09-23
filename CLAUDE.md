@@ -35,9 +35,10 @@ rule carried over from this project's prior work. Concretely:
 
 See `START_HERE.md`'s "Current status" and "In progress / next up"
 sections for the live state -- don't duplicate it here since it'll go
-stale. As of the last update: v1.8.2 (names, genre, and reading and
-writing userfiles/program all hardware-confirmed); gnudb.org querying
-wired up but live round-trip unconfirmed.
+stale. As of the last update: v1.8.7 (names, genre, reading and
+writing userfiles/program, and the gnudb.org lookup all confirmed;
+exact gnudb DiscID matches are a known limitation of the changer's
+whole-second TOC).
 
 ## Files
 
@@ -55,6 +56,8 @@ wired up but live round-trip unconfirmed.
   Program tab (v1.7.0).
 - `test_userfile_program_write.py` -- tests for writing userfiles and
   programs (v1.8.0).
+- `test_gnudb_client.py` -- tests for the gnudb.org lookup, network
+  mocked (v1.8.3).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

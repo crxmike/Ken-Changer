@@ -66,12 +66,29 @@ class GnudbError(Exception):
     -- query() returns an empty list for that instead of raising)."""
 
 
+class GnudbRateLimited(GnudbError):
+    """The server answered with an HTTP status that usually means this IP
+    is being throttled or blocked (403/429/503). Retrying right away only
+    makes it worse, so _get() stops at the first one instead of falling
+    back to the other URL."""
+
+
+# HTTP statuses treated as "rate-limited/blocked" rather than a generic
+# failure. 403 is what the user's earlier block looked like from a
+# browser's point of view; 429/503 are the standard throttling codes. Not
+# confirmed against a real gnudb.org block response yet.
+RATE_LIMIT_STATUSES = (403, 429, 503)
+
+
 @dataclass
 class GnudbMatch:
     """One candidate entry from a `cddb query` response."""
     category: str
     discid: str
     title: str  # "Artist / Album", as the server formats it
+    # False for code 211 ("inexact matches"): the server's best guesses for
+    # a DiscID it doesn't know exactly, which can be a different album.
+    exact: bool = True
 
 
 @dataclass
@@ -132,7 +149,13 @@ def _get(cmd: str, hello: str, timeout: float = DEFAULT_TIMEOUT) -> str:
     `TimeoutError` instead, which is not a `URLError` subclass. Without
     catching it too, that case skipped the HTTPS fallback entirely and
     escaped uncaught into the caller's worker thread instead of becoming
-    a normal, logged `GnudbError`."""
+    a normal, logged `GnudbError`.
+
+    An HTTP error status (urllib's HTTPError) is different: the server was
+    reached and answered, so trying the other URL won't help and just
+    sends another request to a server that may be throttling us. It
+    raises straight away -- GnudbRateLimited for RATE_LIMIT_STATUSES,
+    plain GnudbError otherwise."""
     params = {"cmd": cmd, "hello": hello, "proto": str(PROTOCOL_LEVEL)}
     query_string = urllib.parse.urlencode(params, quote_via=urllib.parse.quote_plus)
 
@@ -145,12 +168,36 @@ def _get(cmd: str, hello: str, timeout: float = DEFAULT_TIMEOUT) -> str:
                 raw = resp.read()
             # Protocol level 6 entries are UTF-8 per the docs' recommendation.
             return raw.decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            # HTTPError is a URLError subclass, so it has to come first.
+            if exc.code in RATE_LIMIT_STATUSES:
+                raise GnudbRateLimited(
+                    f"gnudb.org refused the request (HTTP {exc.code}) -- this IP is "
+                    f"probably rate-limited or blocked. Wait a while (it has taken "
+                    f"hours before) and try again. URL: {url}"
+                ) from exc
+            raise GnudbError(f"gnudb.org returned HTTP {exc.code} {exc.reason}. URL: {url}") from exc
         except (urllib.error.URLError, OSError) as exc:
             attempts.append(f"{url} -> {type(exc).__name__}: {exc}")
             continue
 
     detail = "; ".join(attempts)
     raise GnudbError(f"Couldn't reach gnudb.org (tried {len(attempts)} URL(s)): {detail}")
+
+
+def _status_code(lines: list) -> str:
+    """The 3-digit CDDB status code from a response's first line. Raises
+    GnudbError if the body isn't a CDDB response at all (e.g. an HTML block
+    or error page served with HTTP 200), with the start of it for the log."""
+    if not lines:
+        raise GnudbError("Empty response from gnudb.org")
+    code = lines[0].split(" ", 1)[0]
+    if len(code) != 3 or not code.isdigit():
+        raise GnudbError(
+            f"gnudb.org sent something that isn't a CDDB response (possibly a "
+            f"block or error page): {lines[0][:120]!r}"
+        )
+    return code
 
 
 def query(
@@ -171,7 +218,8 @@ def query(
     elsewhere on the same page lists 200 for a single exact match and 211
     for a list of inexact matches. Handled tolerantly here: 200 is treated
     as one exact match on the status line itself; both 210 and 211 are
-    treated as a multi-line list terminated by a lone ".".
+    treated as a multi-line list terminated by a lone ".". Matches from a
+    211 list are marked exact=False.
     """
     n = len(track_offsets)
     cmd = " ".join(
@@ -181,12 +229,9 @@ def query(
     )
     text = _get(cmd, hello, timeout=timeout)
     lines = text.splitlines()
-    if not lines:
-        raise GnudbError("Empty response from gnudb.org")
-
+    code = _status_code(lines)
     status_line = lines[0]
     parts = status_line.split(" ", 1)
-    code = parts[0]
 
     if code == "200":
         rest = parts[1] if len(parts) > 1 else ""
@@ -203,7 +248,9 @@ def query(
             toks = line.split(" ", 2)
             if len(toks) < 3:
                 continue
-            matches.append(GnudbMatch(category=toks[0], discid=toks[1], title=toks[2]))
+            matches.append(GnudbMatch(
+                category=toks[0], discid=toks[1], title=toks[2], exact=(code == "210"),
+            ))
         return matches
 
     if code == "202":
@@ -220,11 +267,8 @@ def read(category: str, discid: str, hello: str, timeout: float = DEFAULT_TIMEOU
     cmd = f"cddb read {category} {discid}"
     text = _get(cmd, hello, timeout=timeout)
     lines = text.splitlines()
-    if not lines:
-        raise GnudbError("Empty response from gnudb.org")
-
+    code = _status_code(lines)
     status_line = lines[0]
-    code = status_line.split(" ", 1)[0]
     if code != "210":
         raise GnudbError(f"gnudb.org read failed: {status_line}")
 
