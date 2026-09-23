@@ -1,9 +1,9 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.8.7 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.9.2 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
-and programs + gnudb.org lookup, all confirmed working against real
-CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
+and programs + gnudb.org lookup with cover art, all confirmed working
+against real CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Genre writing took four different
 approaches to get right -- it goes out folded into a `WRITE_NAME` write
 rather than the standalone `Action.SET_DISC_GENRE` action the protocol
@@ -29,18 +29,21 @@ transcribed into `pclink_protocol.py`).
 
 - Python 3.9+
 - `pyserial`
+- `Pillow` (v1.9.1), for showing cover art on the Disc Data tab. Covers
+  are JPEGs, which Tkinter can't show on its own. Without Pillow the app
+  still runs; the cover lookup just logs that Pillow is missing.
 - `tkinter` (bundled with most Python installs; on some Linux distros install
   separately, e.g. `sudo apt install python3-tk`)
 - A **null-modem** USB-to-RS232 serial adapter/cable connected to the
   changer's PC-Link port (TX/RX must be swapped -- a straight-through cable
   will not work).
 - Internet access, only if you want to use the Disc Data tab's "Query
-  gnudb.org" feature (everything else works fully offline). No extra pip
-  package needed for this -- `gnudb_client.py` uses only the standard
-  library.
+  gnudb.org" feature (everything else works fully offline).
+  `gnudb_client.py` and `album_art.py` use the standard library for the
+  network side.
 
 ```bash
-pip install pyserial
+pip install pyserial pillow
 python pclink_app.py
 ```
 
@@ -209,6 +212,13 @@ worth knowing:
 - **Tests**: `test_gnudb_client.py`, with the network mocked, plus frames
   from the first live session. **Live round-trip confirmed (v1.8.3
   session).**
+- **Cover art (v1.9.1, CONFIRMED v1.9.2)**: after a gnudb entry loads, the Disc Data tab shows its cover at the top right. A
+  `cddb read` response lists the entry's covers as comment lines
+  (`# Cover: https://coverartarchive.org/...`), and `album_art.py` uses
+  the first one that downloads. If the entry has none, it falls back to
+  searching Apple's iTunes Search API for gnudb's artist and album. Only
+  the artist and album text go to iTunes, not your contact email. See
+  "Honest gaps" #18.
 
 ## Owner's manual notes
 
@@ -291,6 +301,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
   query/read protocol (stdlib `urllib` only, no serial or Tkinter
   dependency; tested in `test_gnudb_client.py` against responses in
   gnudb.org's documented format).
+- `album_art.py` -- cover art for a gnudb entry: the entry's own cover
+  links first, then an iTunes search. Decodes with Pillow; tested in
+  `test_album_art.py`.
 
 ## Protocol summary (for reference)
 
@@ -432,12 +445,17 @@ exactly what's happening):
    observed starting at exactly `00:02`. **Known limitation: exact
    gnudb matches aren't expected on this changer (v1.8.6).** Every disc
    the user looked up got inexact matches only. The CD-425M's TOC times
-   always have `frames = 0` (whole seconds only), and its seconds evidently
-   aren't the true `floor(frames / 75)`, probably rounded, which shifts
-   the checksum byte. Without the real frame offsets the app can't
-   correct for this. The inexact-match picker is the normal lookup path,
-   and it has found the right album every time so far. See
-   `CHANGELOG.md` v1.8.5-v1.8.6.
+   always have `frames = 0` (whole seconds only). v1.8.6 blamed that,
+   guessing the changer rounds its seconds. v1.9.2's log points
+   elsewhere: for two discs (Limblifter, Rusty), a gnudb candidate
+   matched our checksum and length exactly, and only the last byte
+   differed. Ours was the right track count; gnudb's (`0x84`, `0x81`)
+   couldn't be one. So our IDs look right, and those gnudb entries (all
+   in `data`) seem to be stored under non-standard IDs. Henhouse had no
+   such candidate, so rounding may still matter for some discs. Either
+   way, the inexact-match picker is the normal lookup path, and it has
+   found the right album every time so far. See `CHANGELOG.md`
+   v1.8.5, v1.8.6 and v1.9.2.
 7. **Text data retrieval for multiple tracks.** `TextData`/`LongTextData`
    appear to be single-item replies (one track or one disc name per frame).
    Requesting "track names" for a whole disc may return one frame per track
@@ -691,6 +709,29 @@ exactly what's happening):
    - `ReadyForData`'s byte was `1` or `0` for track-name writes, `1` for
      disc/userfile names and `4` for the program. All proceeded, and its
      meaning is unknown.
+
+18. **Cover art -- CONFIRMED in the app (v1.9.2).** Internet only; it
+   never talks to the changer. The user looked up three discs (Trouble at
+   the Henhouse, Bellaclava, Fluke) and the right cover appeared for
+   each. All three came from the gnudb entry's own `# Cover:` link
+   (coverartarchive.org), so real gnudb responses do carry them. Known
+   limits:
+   - **The iTunes fallback is untested in the app**: none of the three
+     needed it. By hand it found Trouble at the Henhouse and Highway 61
+     Revisited (2026-09-23).
+   - **The iTunes fallback needs the artist to match** (case, accents,
+     punctuation, a leading "The" and bracketed suffixes like "(Remastered)" ignored), and so
+     must the album, or at least one title must start with the other.
+     Otherwise nothing is shown rather than a wrong cover. A
+     starts-with match is logged as "closest title".
+   - **iTunes' catalog has gaps.** Pink Floyd's *Dark Side of the Moon*
+     isn't in its search results at all (only tribute albums), so it only
+     gets a cover if its gnudb entry has one.
+   - The cover is kept per slot for the session, like the gnudb data.
+   - **Replaced in v1.9.1:** v1.9.0 used iTunes only and asked Apple's
+     image server for a PNG (an undocumented conversion) so Tkinter could
+     show it without Pillow. With Pillow that trick isn't needed; the
+     fallback now downloads iTunes' ordinary JPEG.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

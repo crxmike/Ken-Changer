@@ -85,12 +85,20 @@ Name writes keep a disc's userfiles too (v1.8.2, confirmed).
 - **gnudb.org: live round-trip CONFIRMED** (v1.8.3 session: query ->
   inexact-match picker -> read -> write to the changer). Still open:
   - Exact DiscID matches: a known limitation, not a bug (v1.8.6).
-    Every disc tried got inexact matches only, because the changer's TOC
-    is whole seconds only (`frames = 0`, probably rounded). The picker
-    is the normal path. Nothing further planned.
+    Every disc tried got inexact matches only. The picker is the normal
+    path. v1.8.6 blamed the changer's whole-second TOC, but v1.9.2's log
+    suggests our IDs are right and gnudb stores some entries under
+    non-standard IDs (same checksum and length, different last byte).
+    Nothing further planned.
   - ASCII folding of gnudb text: CONFIRMED (v1.8.5).
   - The 25-character disc-name warning: CONFIRMED (v1.8.5 screenshot).
   - Rate-limit handling (HTTP 403/429/503) hasn't met a real block yet.
+- **Cover art after a gnudb read: CONFIRMED (v1.9.2)** (Disc Data tab,
+  top right). Comes from the gnudb entry's own `# Cover:` links, with an
+  iTunes search by artist/album as the fallback (`album_art.py`). Needs
+  Pillow. Three discs, all the right cover, all from gnudb; the iTunes
+  fallback hasn't been needed in the app yet. See README "Honest
+  gaps" #18.
 - **Deferred for now: a software fallback for "ALL DATA READ"** for users
   without a remote (see the caveat in `CHANGELOG.md`'s v1.2.0 entry). The
   idea, not yet implemented on purpose (explicitly held off per the
@@ -106,6 +114,8 @@ Name writes keep a disc's userfiles too (v1.8.2, confirmed).
 - `pclink_link.py` -- serial transport, ENQ/ACK/EOT flow control.
 - `pclink_app.py` -- the Tkinter GUI.
 - `gnudb_client.py` -- gnudb.org HTTP client (stdlib only).
+- `album_art.py` -- cover art: gnudb's own links, then iTunes (v1.9.1;
+  needs Pillow).
 - `test_write_feature.py` -- tests for the write-to-changer feature
   (names, confirmed; genre/program/userfiles encoders, round-trip only).
 - `test_mode_feature.py` -- tests for the v1.6.0 Play Mode selector
@@ -117,6 +127,8 @@ Name writes keep a disc's userfiles too (v1.8.2, confirmed).
 - `test_gnudb_client.py` -- tests for the gnudb.org lookup (network
   mocked, plus frames from the first live session); live round-trip
   confirmed (v1.8.4).
+- `test_album_art.py` -- tests for the cover art lookup (network mocked);
+  confirmed in the app (v1.9.2).
 - `test_genre_feature.py` -- tests for the genre read/write feature;
   confirmed against real hardware as of v1.5.0 (writes fold into a
   `WRITE_NAME` write rather than a standalone action), including a

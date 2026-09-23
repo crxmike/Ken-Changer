@@ -35,10 +35,11 @@ rule carried over from this project's prior work. Concretely:
 
 See `START_HERE.md`'s "Current status" and "In progress / next up"
 sections for the live state -- don't duplicate it here since it'll go
-stale. As of the last update: v1.8.7 (names, genre, reading and
-writing userfiles/program, and the gnudb.org lookup all confirmed;
-exact gnudb DiscID matches are a known limitation of the changer's
-whole-second TOC).
+stale. As of the last update: v1.9.2 (names, genre, reading and
+writing userfiles/program, the gnudb.org lookup and gnudb cover art all
+confirmed; exact gnudb DiscID matches don't happen on this changer, most
+likely because gnudb stores those entries under non-standard IDs rather
+than because of the whole-second TOC -- see CHANGELOG v1.9.2).
 
 ## Files
 
@@ -47,6 +48,8 @@ whole-second TOC).
 - `pclink_link.py` -- serial transport, ENQ/ACK/EOT flow control.
 - `pclink_app.py` -- the Tkinter GUI.
 - `gnudb_client.py` -- gnudb.org HTTP client (stdlib only).
+- `album_art.py` -- cover art: gnudb's own `# Cover:` links, then an
+  iTunes search (v1.9.1; needs Pillow).
 - `test_write_feature.py` -- tests for the in-progress write feature.
 - `test_genre_feature.py` -- tests for the genre read/write feature
   (v1.4.0).
@@ -58,6 +61,8 @@ whole-second TOC).
   programs (v1.8.0).
 - `test_gnudb_client.py` -- tests for the gnudb.org lookup, network
   mocked (v1.8.3).
+- `test_album_art.py` -- tests for the cover art lookup, network mocked
+  (v1.9.0).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

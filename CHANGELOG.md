@@ -1,5 +1,130 @@
 # Changelog
 
+## v1.9.2 -- Cover art CONFIRMED; new DiscID evidence against v1.8.6's rounding theory
+
+The user looked up three discs with v1.9.1 on the real CD-425M against
+live gnudb.org (2026-09-23, raw-byte log), then confirmed on screen that
+each cover appeared in the Disc Data tab and was the right album.
+
+**Cover art: confirmed, all three from gnudb's own links.**
+
+| Slot | Album | Cover |
+|---|---|---|
+| 1 | The Tragically Hip / Trouble at the Henhouse | `coverartarchive.org/release/6966ed5b-...` |
+| 2 | Limblifter / Bellaclava | `coverartarchive.org/release/e79547b9-...` |
+| 3 | Rusty / Fluke | `coverartarchive.org/release/4b6f0c0d-...` |
+
+So real gnudb `read` responses for this user's discs do carry the
+`# Cover:` lines (v1.9.1 had only the docs' example to go on). The first
+link downloaded and decoded every time. The iTunes fallback wasn't
+needed, so it is still untested in the app. The Henhouse release is the
+same MusicBrainz release that came top in a hand search for that album
+while building v1.9.0.
+
+**DiscIDs: our IDs look right; the v1.8.6 explanation looks wrong.**
+
+| Disc | Ours | Closest gnudb candidate |
+|---|---|---|
+| Limblifter / Bellaclava (13 tracks) | `ae0b3b0d` | `ae0b3b84` |
+| Rusty / Fluke (10 tracks) | `7908ac0a` | `7908ac81` (also `7c08ac81`, `7908ad92`) |
+| Trouble at the Henhouse (12 tracks) | `930c540c` | `8e0c548a`, `900c5484`, `900c568e` |
+
+For Limblifter and Rusty, one candidate has exactly our checksum and our
+length. Only the last byte differs. In a standard CDDB1 ID that byte is
+the track count: ours (`0d` = 13, `0a` = 10) is right, and gnudb's
+(`84`, `81`) can't be a track count. v1.8.6 blamed the changer rounding
+its whole-second TOC times, but that would change the checksum, and here
+it matches. The better explanation is that our IDs are correct and these
+gnudb entries, all filed under `data`, are stored under a non-standard
+ID, so an exact match can't happen. Henhouse has no such candidate
+(every checksum differs), so rounding may still play a part for some
+discs. Not established: how gnudb arrives at IDs like `ae0b3b84`; its
+protocol page doesn't say.
+
+Either way, the practical conclusion stands: lookups on this changer
+come back as inexact matches, and the picker is the normal path. The log
+line "no exact match (normal for this changer -- its TOC has whole
+seconds only)" now overstates the cause. It's left unchanged for now,
+since the behavior it describes is still right.
+
+Tests: `TestRealDiscIdComparison` in `test_gnudb_client.py` (our DiscIDs
+from the logged TOC frames, and the checksum/length match). No code
+change besides the version bump.
+
+## v1.9.1 -- Cover art from gnudb's own links first; Pillow is now required
+
+The user pointed out that gnudb.org's docs show cover art in `cddb read`
+responses. v1.9.0 missed this: I assumed CDDB entries were text only and
+didn't check gnudb's docs. The code hid it too, because
+`gnudb_client.read()` threw away every `#` line as a comment. gnudb's
+documented example has one pair of lines per MusicBrainz release:
+
+```
+# Cover: https://coverartarchive.org/release/<mbid>/<id>-500.jpg
+# Artid: <mbid>
+```
+
+- `read()` now collects the Cover URLs into `GnudbDisc.cover_urls`, in
+  order. Everything else it parses is unchanged.
+- `album_art.fetch_album_art(disc)` tries those URLs first. They belong
+  to the exact entry the user picked, so they're more reliable than a
+  search. iTunes (v1.9.0's matching, unchanged) is now only the
+  fallback, for an entry with no Cover line or whose images all fail.
+  Each failed gnudb link is logged, and the log says where the cover
+  came from.
+- **Pillow is now a requirement** (`pip install pyserial pillow`), the
+  user's choice. Cover Art Archive serves JPEGs, which Tkinter can't show
+  on its own. Images are decoded and shrunk to fit 200x200 on the worker
+  thread, and shown via `ImageTk`. Without Pillow the app still starts;
+  the lookup logs "Pillow isn't installed".
+- With Pillow, v1.9.0's undocumented iTunes PNG trick isn't needed. The
+  fallback downloads iTunes' ordinary JPEG (600x600, shrunk).
+
+Checked by hand (2026-09-23, not in the app): the Cover Art Archive link
+from gnudb's documented example downloaded and displayed in the real app
+window (197x200), and the iTunes fallback still found Trouble at the
+Henhouse. Whether real gnudb entries for the user's discs carry Cover
+lines is still unknown. **Not yet tried in the app.**
+
+Tests: `test_album_art.py` (30): Cover lines parsed from gnudb's
+documented read example, the gnudb -> next link -> iTunes order, JPEG
+decoding with Pillow, the missing-Pillow message, and the worker's log
+lines.
+
+## v1.9.0 -- Cover art on the Disc Data tab after a gnudb read
+
+When a gnudb entry loads, the app now looks up its cover and shows it at
+the top right of the Disc Data tab. **Not yet tried in the app.**
+
+gnudb has no images, since CDDB entries are text only. So the new
+`album_art.py` searches Apple's iTunes Search API for gnudb's artist and
+album. Cover Art Archive (via MusicBrainz) was the other option, but it
+serves JPEGs, and Tkinter can't show JPEG without Pillow. iTunes returns
+a JPEG artwork URL too, but Apple's image server converts to whatever
+format the URL's extension names, so the app asks for
+`.../200x200bb.png` and Tk shows it directly, with no new dependency.
+That conversion isn't documented, so it could stop working. It worked in
+a hand check against the live API (2026-09-23).
+
+Choosing the result: the artist must match, ignoring case, accents,
+punctuation, a leading "The" and bracketed suffixes like "(Remastered)".
+Then the album must match exactly, or one title must start with the
+other (logged as "closest title"). Otherwise the app shows no cover
+rather than risk the wrong one. A search on a common title returns other
+artists' albums, and a search on an artist returns their other albums.
+In the hand check, Trouble at the Henhouse and Highway 61 Revisited were
+found. *Dark Side of the Moon* wasn't: iTunes' results have only
+tribute albums for it, and those were correctly rejected.
+
+The lookup runs on the gnudb worker thread after the read. A failure is
+only logged and never blocks the gnudb data. The cover is kept per slot
+for the session, like `_gnudb_cache`, and follows the Disc Data tab when
+the slot changes. Only the artist/album text goes to iTunes, not the
+contact email.
+
+Tests: `test_album_art.py` (22, network mocked; the iTunes result is
+trimmed from the real Henhouse response).
+
 ## v1.8.7 -- gnudb genre matching ignores case, hyphens and "&"/"and"
 
 In the user's screenshot, "Copy gnudb -> Custom" left the Custom genre
@@ -47,7 +172,9 @@ only)" so it doesn't read like an error.
 
 Not established: whether the changer rounds or does something else.
 That would need a disc whose real frame-accurate TOC is known (e.g.
-ripped on a PC) to compare against the changer's.
+ripped on a PC) to compare against the changer's. **Revised in v1.9.2:**
+two more discs had a gnudb candidate matching our checksum and length
+exactly, which points away from rounding. See v1.9.2.
 
 ## v1.8.5 -- ASCII folding CONFIRMED; what gnudb's candidate DiscIDs show
 

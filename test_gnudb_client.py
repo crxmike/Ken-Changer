@@ -451,6 +451,43 @@ class TestRealLookupSession(unittest.TestCase):
         self.assertEqual(sent[7:], b"Don't Wake Daddy")
 
 
+class TestRealDiscIdComparison(unittest.TestCase):
+    """The user's v1.9.1 log (2026-09-23, slots 2 and 3): our DiscIDs from
+    the real TOC frames vs the inexact candidates gnudb.org returned. For
+    both discs one candidate has our checksum AND our length; only the
+    last byte differs, and ours is the right track count. That's evidence
+    against v1.8.6's "the changer rounds its seconds" explanation (which
+    would change the checksum), at least for these two discs."""
+
+    LIMBLIFTER_TOC = (  # slot 2, 13 tracks
+        "02 06 30 00 02 00 01 00 01 0d 00 02 00 04 11 00 08 05 00 11 52 00 15 55 "
+        "00 18 43 00 22 21 00 25 59 00 29 48 00 33 18 00 37 11 00 40 31 00 44 01 "
+        "00 47 57 00 54"
+    )
+    RUSTY_TOC = (  # slot 3, 10 tracks
+        "02 06 27 00 03 00 01 00 01 0a 00 02 00 03 45 00 05 39 00 09 49 00 13 27 "
+        "00 16 43 00 21 10 00 26 46 00 30 43 00 32 30 00 37 02 00 ac"
+    )
+
+    def _discid(self, frame):
+        toc = proto.decode_disc_toc(_data(frame))
+        return proto.calculate_cddb_discid(toc["track_times"])["discid"]
+
+    def test_our_discids_match_what_the_app_queried(self):
+        self.assertEqual(self._discid(self.LIMBLIFTER_TOC), "ae0b3b0d")
+        self.assertEqual(self._discid(self.RUSTY_TOC), "7908ac0a")
+
+    def test_a_candidate_differs_from_ours_only_in_the_last_byte(self):
+        for ours, theirs, tracks in (
+            (self._discid(self.LIMBLIFTER_TOC), "ae0b3b84", 13),
+            (self._discid(self.RUSTY_TOC), "7908ac81", 10),
+        ):
+            with self.subTest(ours=ours):
+                self.assertEqual(ours[:6], theirs[:6])  # checksum + length
+                self.assertEqual(int(ours[6:], 16), tracks)
+                self.assertGreater(int(theirs[6:], 16), 99)  # not a track count
+
+
 class TestRealFoldedWriteSession(unittest.TestCase):
     """The user's v1.8.4 log (2026-09-23): after "Copy gnudb -> Custom" with
     ascii_fold, tracks 4 and 10 went out with a plain apostrophe (0x27) and

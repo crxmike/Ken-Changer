@@ -101,6 +101,10 @@ class GnudbDisc:
     year: str = ""
     genre: str = ""
     track_titles: dict = field(default_factory=dict)  # 1-based track number -> title
+    # From the entry's "# Cover: <url>" comment lines (v1.9.1), in order:
+    # coverartarchive.org JPEGs, one per MusicBrainz release gnudb has
+    # linked to this entry. Empty if there are none.
+    cover_urls: list = field(default_factory=list)
 
 
 def build_hello(contact_email: str, app_name: str, app_version: str) -> str:
@@ -273,10 +277,21 @@ def read(category: str, discid: str, hello: str, timeout: float = DEFAULT_TIMEOU
         raise GnudbError(f"gnudb.org read failed: {status_line}")
 
     fields: dict = {}
+    cover_urls = []
     for line in lines[1:]:
         if line.strip() == ".":
             break
-        if line.startswith("#") or "=" not in line:
+        if line.startswith("#"):
+            # gnudb adds cover art links as comments (documented example
+            # on howtognudb.php): "# Cover: https://coverartarchive.org/..."
+            # followed by "# Artid: <MusicBrainz release id>".
+            comment = line[1:].strip()
+            if comment.lower().startswith("cover:"):
+                url = comment[len("cover:"):].strip()
+                if url.startswith(("http://", "https://")):
+                    cover_urls.append(url)
+            continue
+        if "=" not in line:
             continue  # comment lines (track offsets, disc length, etc.)
         key, _, value = line.partition("=")
         key = key.strip()
@@ -314,4 +329,5 @@ def read(category: str, discid: str, hello: str, timeout: float = DEFAULT_TIMEOU
         year=fields.get("DYEAR", ""),
         genre=fields.get("DGENRE", ""),
         track_titles=track_titles,
+        cover_urls=cover_urls,
     )

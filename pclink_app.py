@@ -7,7 +7,7 @@ works with the CD-4700M / CD-4260M, which share the same command set) over
 its PC-Link serial port, via a USB-to-RS232 null-modem adapter.
 
 Run:
-    pip install pyserial
+    pip install pyserial pillow
     python pclink_app.py
 
 See README.md for wiring notes and a summary of what is/isn't confirmed
@@ -34,6 +34,7 @@ from pclink_link import (
 )
 from pclink_protocol import Frame
 import gnudb_client
+import album_art
 
 
 MODE_CHANGE_TIMEOUT_MS = 5000  # how long to wait for an InfoEvent after Set Mode
@@ -172,7 +173,16 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # v1.8.7 -- "Copy gnudb -> Custom" matches gnudb's genre to the changer's
 # genre list ignoring case, hyphens and '&'/'and' ("rock" -> Rock,
 # "hip-hop" -> Hip Hop). Different words still stay blank.
-APP_VERSION = "1.8.7"
+# v1.9.0 -- cover art on the Disc Data tab after a gnudb read, looked up
+# on iTunes by gnudb's artist/album (album_art.py). Internet-only, never
+# touches the changer. Not yet tried in the app.
+# v1.9.1 -- the cover now comes from the gnudb entry's own "# Cover:"
+# links (coverartarchive.org) first, with iTunes as the fallback. Needs
+# Pillow for the JPEGs. Not yet tried in the app.
+# v1.9.2 -- cover art CONFIRMED on screen (3 discs, all from gnudb's own
+# links). Docs/tests only, plus DiscID evidence against v1.8.6's rounding
+# theory (see CHANGELOG.md).
+APP_VERSION = "1.9.2"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -687,6 +697,10 @@ class App(tk.Tk):
         # so unlike the changer-sourced caches this is NOT cleared on
         # disconnect.
         self._gnudb_cache: dict[int, gnudb_client.GnudbDisc] = {}  # slot -> GnudbDisc
+        # Cover art found after a gnudb read (v1.9.0), same lifetime as
+        # _gnudb_cache. None = looked up, nothing matched.
+        self._album_art_cache: dict[int, album_art.AlbumArt | None] = {}
+        self._album_art_photo = None  # keeps the shown tk.PhotoImage alive
 
         # Disc Map tab: per-slot occupancy as last reported by DiscInfo
         # (slot -> True if it has a disc, False if empty; a slot with no
@@ -939,6 +953,14 @@ class App(tk.Tk):
             side="left", padx=(4, 0)
         )
 
+        # Cover art (v1.9.0): fetched from iTunes after a gnudb read, since
+        # gnudb has no images -- see album_art.py. Sits to the right of the
+        # toolbar/email/summary/genre rows.
+        self.album_art_label = ttk.Label(
+            disc_data_tab, text="No cover art", anchor="center", justify="center",
+        )
+        self.album_art_label.grid(row=0, column=1, rowspan=5, sticky="ne", padx=(8, 2))
+
         self.disc_data_summary = ttk.Label(disc_data_tab, text="No current disc known yet.")
         self.disc_data_summary.grid(row=2, column=0, sticky="w", pady=(0, 4))
 
@@ -991,7 +1013,7 @@ class App(tk.Tk):
         disc_data_tab.rowconfigure(5, weight=1)
 
         dd_scroll = ScrollableFrame(disc_data_tab)
-        dd_scroll.grid(row=5, column=0, sticky="nsew")
+        dd_scroll.grid(row=5, column=0, columnspan=2, sticky="nsew")
         self.disc_data_rows_frame = dd_scroll.inner
         for col, width in [(0, 10), (1, 34), (2, 34), (3, 34)]:
             self.disc_data_rows_frame.columnconfigure(col, minsize=width * 7)
@@ -1304,6 +1326,7 @@ class App(tk.Tk):
             w.destroy()
         self._disc_data_rows = []
         self._disc_data_slot = None
+        self._show_album_art(None)
         self.disc_data_summary.configure(text="No current disc known yet.")
         self._reset_disc_map()
         self._userfiles_cache.clear()
@@ -1818,6 +1841,7 @@ class App(tk.Tk):
             self._disc_data_rows = []
             self._disc_data_slot = slot
             self.genre_custom_var.set(self._custom_genre_cache.get(slot, ""))
+            self._show_album_art(slot)
 
         while len(self._disc_data_rows) < track_count + 1:
             self._add_disc_data_row(len(self._disc_data_rows))
@@ -1961,6 +1985,60 @@ class App(tk.Tk):
         )
         if slot == self._current_slot:
             self._update_disc_data_gnudb_column()
+        self._album_art_worker(slot, disc)
+
+    def _album_art_worker(self, slot: int, disc: "gnudb_client.GnudbDisc"):
+        """Looks up cover art for a gnudb entry (on the gnudb worker
+        thread, after the read): the entry's own "# Cover:" links first,
+        then iTunes (album_art.fetch_album_art). A failure only gets
+        logged: the art is a nice-to-have and never blocks the gnudb data
+        itself."""
+        gnudb_errors = []
+        try:
+            art = album_art.fetch_album_art(disc, errors=gnudb_errors)
+        except album_art.AlbumArtError as exc:
+            art, failure = None, exc
+        else:
+            failure = None
+        for err in gnudb_errors:
+            self._log(f"Cover art: gnudb's cover link failed: {err}")
+        if failure is not None:
+            self._log(f"Cover art lookup failed: {failure}")
+            return
+        self._album_art_cache[slot] = art
+        if art is None:
+            self._log(
+                f"Cover art: none found (gnudb entry has {len(disc.cover_urls)} cover "
+                f"link(s); no iTunes match for '{disc.artist} / {disc.album}')."
+            )
+        elif art.source == "gnudb":
+            self._log(f"Cover art: from the gnudb entry ({art.url})")
+        else:
+            self._log(
+                f"Cover art: gnudb entry has no usable cover; using iTunes' "
+                f"'{art.artist} / {art.album}'"
+                + ("" if art.exact else " (closest title, check it's the right album)")
+            )
+        self.ui_queue.put(lambda: self._show_album_art(self._disc_data_slot))
+
+    def _show_album_art(self, slot):
+        """Shows the cached cover for `slot` in the Disc Data tab, or a
+        placeholder. UI thread only."""
+        art = self._album_art_cache.get(slot) if slot is not None else None
+        if art is None:
+            self._album_art_photo = None
+            text = "No cover art" if slot not in self._album_art_cache else "No cover found"
+            self.album_art_label.configure(image="", text=text)
+            return
+        try:
+            from PIL import ImageTk
+            photo = ImageTk.PhotoImage(art.image, master=self)
+        except (ImportError, tk.TclError) as exc:
+            self._log(f"Cover art: couldn't display the image: {exc}")
+            self.album_art_label.configure(image="", text="No cover art")
+            return
+        self._album_art_photo = photo
+        self.album_art_label.configure(image=photo, text="")
 
     def _show_gnudb_match_picker(self, slot: int, matches: list, hello: str):
         win = tk.Toplevel(self)
