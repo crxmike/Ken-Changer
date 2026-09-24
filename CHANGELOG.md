@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.12.2 -- Writing an empty program CONFIRMED
+
+**Writing an empty program clears it** (2026-09-24, raw-byte log). This
+was the last untried corner of v1.8.0's program write (see v1.8.1).
+- First a 3-step program (slot 1 T1, slot 2 T2, slot 3 T3) was written:
+  `WRITE_PROGRAM` (`02 03 07 00 20 20 00 00 00 00 00 b6`), ReadyForData
+  raw byte 4, then `02 0d 0a 00 03 01 00 01 02 00 02 03 00 03 da`. The
+  re-read matched, and as in v1.8.1 the changer went to Program mode
+  (`InfoEvent` `mode=3, program=1`), then Changing, then Playing.
+- Then the empty write: the same `WRITE_PROGRAM` request, ReadyForData 4
+  again, then a zero-length `DiscListing` (`02 0d 01 00 00 f2`). The
+  changer ACK'd it, the re-read returned that same empty frame, and an
+  `InfoEvent` followed with `program=0, mode=0` (Track Mode).
+
+**New behavior:** clearing the program while it plays **drops the changer
+out of Program mode back to Track mode**, like leaving Program mode clears
+the program (v1.8.1) but in the other direction. Seen once. The Write
+Program dialog said an empty write "may switch to Program mode and start
+playing it". For an empty program it now says the changer goes back to
+Track mode.
+
+Tests: `TestRealWriteSession.test_empty_program_write_clears_it` in
+`test_userfile_program_write.py`, built from this log's frames.
+
 ## v1.12.1 -- Library userfiles CONFIRMED; the Userfiles tab uses the saved scan (CONFIRMED)
 
 **v1.12.0 confirmed on the real CD-425M** (2026-09-24, raw-byte log).

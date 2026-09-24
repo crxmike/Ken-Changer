@@ -73,7 +73,9 @@ userfile, set which userfiles a disc is in, and a program editor.
 **CONFIRMED on real hardware.** Disc membership rides in a disc-name
 `WRITE_NAME` (`TextData`'s `userfiles` byte, which the changer honors),
 following the genre precedent. Writing a program also starts it playing
-in Program mode, and leaving Program mode clears the program. See
+in Program mode, and leaving Program mode clears the program. Writing
+an empty program clears it too, and drops a playing program back to
+Track mode (v1.12.2, confirmed). See
 `CHANGELOG.md`'s v1.8.1 entry and README "Honest gaps" #17.
 
 Name writes keep a disc's userfiles too (v1.8.2, confirmed).

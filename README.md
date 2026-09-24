@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.12.1 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.12.2 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
 and programs + gnudb.org lookup with cover art, all confirmed working
 against real CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
@@ -743,7 +743,10 @@ exactly what's happening):
      nothing else sent (the user confirmed they didn't press Play). It's
      the only way into Program mode found from PC-Link (#15).
      **Leaving Program mode clears the program**, as the owner's manual
-     says for P.MODE. Writing an empty program hasn't been tried.
+     says for P.MODE. **Writing an empty program clears it (v1.12.2,
+     CONFIRMED)**: a zero-length `DiscListing` (`02 0d 01 00 00 f2`) was
+     ACK'd and read back empty. Doing that while the program played
+     dropped the changer back to Track mode.
    - **Name writes keep the disc's userfiles (v1.8.2, CONFIRMED)**:
      every name write carries the disc's known mask (read first if
      needed) rather than `0`, which would clear it. A track name written

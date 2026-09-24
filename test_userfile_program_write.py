@@ -417,6 +417,30 @@ class TestRealWriteSession(_AppTestCase):
         self.assertEqual(self._wire(cmd, fu),
                          "02 fe 10 00 01 00 01 07 01 03 00 47 69 66 74 20 53 68 6f 70 a1")
 
+    def test_empty_program_write_clears_it(self):
+        # v1.12.2 (2026-09-24): a 3-step program was written, then an empty
+        # one. Both got ReadyForData 4 and were ACK'd; the re-read after the
+        # empty write came back empty, and the InfoEvent went program=0,
+        # Track Mode.
+        req, fu = build_program_write([(1, 1), (2, 2), (3, 3)])
+        self.assertEqual(self._wire(proto.CMD_DATA_ACCESS, req), "02 03 07 00 20 20 00 00 00 00 00 b6")
+        self.assertEqual(self._wire(proto.CMD_DISC_LISTING, fu),
+                         "02 0d 0a 00 03 01 00 01 02 00 02 03 00 03 da")
+        req, fu = build_program_write([])
+        self.assertEqual(self._wire(proto.CMD_DATA_ACCESS, req), "02 03 07 00 20 20 00 00 00 00 00 b6")
+        self.assertEqual(self._wire(proto.CMD_DISC_LISTING, fu), "02 0d 01 00 00 f2")
+
+        reply = "02 0d 01 00 00 f2"
+        self.assertEqual(proto.decode_disc_listing(_data(reply))["items"], [])
+        self.app._program_draft = [(1, 1), (2, 2), (3, 3)]
+        self.app._on_frame(proto.Frame(proto.CMD_DISC_LISTING, _data(reply),
+                                       proto.decode_disc_listing(_data(reply))))
+        self.drain_ui_queue()
+        self.assertEqual(self.app._program_draft, [])
+
+        info = proto.decode_info_event(_data("02 12 09 00 01 00 01 00 03 02 00 00 00 de"))
+        self.assertEqual((info["program"], info["mode_name"]), (0, "Track Mode"))
+
     def test_ready_for_data_bytes_seen(self):
         # Seen: 1 and 0 for track-name WRITE_NAMEs, 1 for disc-name and
         # userfile-name ones, 4 for WRITE_PROGRAM. Meaning unknown; all

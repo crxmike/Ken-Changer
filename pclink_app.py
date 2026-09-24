@@ -218,7 +218,10 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # from the Library's saved scan (marked "*") for discs the changer hasn't
 # reported this session, and "Read Userfiles for Known Discs" uses the
 # scan's slots too. CONFIRMED on real hardware.
-APP_VERSION = "1.12.1"
+# v1.12.2 -- CONFIRMED that writing an empty program clears it (and drops
+# the changer from Program mode back to Track mode). The Write Program
+# dialog now says that for an empty program. Docs/tests otherwise.
+APP_VERSION = "1.12.2"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -3210,11 +3213,17 @@ class App(tk.Tk):
         except ValueError as exc:
             messagebox.showerror("Write Program", str(exc))
             return
-        what = f"this {len(steps)}-step program" if steps else "an EMPTY program (clearing it)"
+        if steps:
+            what = f"this {len(steps)}-step program"
+            effect = "and the changer may switch to Program mode and start playing it."
+        else:
+            # v1.12.2, CONFIRMED: clears it, and a changer in Program mode
+            # drops back to Track mode.
+            what = "an EMPTY program (clearing it)"
+            effect = "and if the changer is in Program mode it goes back to Track mode."
         if not messagebox.askyesno(
             "Write Program",
-            f"Write {what} to the changer?\n\nThis replaces the program stored there, "
-            "and the changer may switch to Program mode and start playing it.",
+            f"Write {what} to the changer?\n\nThis replaces the program stored there, {effect}",
         ):
             return
         self._write_single_bg(

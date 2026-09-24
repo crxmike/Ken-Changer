@@ -43,6 +43,7 @@ those entries under non-standard IDs -- see CHANGELOG v1.9.2; DiscInfo
 reports 99 tracks for discs not played since power-on -- see CHANGELOG
 v1.10.1). v1.11.1: the Library tab (browse/search/play every disc) is
 confirmed too, and so is v1.12.0's userfile add/remove there (v1.12.1).
+v1.12.2: writing an empty program (clearing it) is confirmed.
 
 ## Files
 
