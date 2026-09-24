@@ -1,5 +1,127 @@
 # Changelog
 
+## v1.10.2 -- Backup export and restore CONFIRMED on real hardware
+
+The user tested v1.10.1 on the real CD-425M (2026-09-24, raw-byte log).
+The changer had been switched on with slot 1 loaded.
+
+**Export: CONFIRMED.** Slot 1 reported 12 tracks, and slots 2 and 3
+reported 99. The summary listed slots 2 and 3 as having an unknown track
+count, and the file saved them as `null`, with no track "0". 3 discs
+saved; all 200 slots took about 70 seconds.
+
+**Restore: CONFIRMED.** After the export, the user changed two slot 1
+track names on the Disc Data tab: track 1 to "Gift Shoppe" and track 7
+to "Ass Jigglin". Restore then:
+- wrote only those two tracks back ("Gift Shop", "Butts Wigglin"). Each
+  write carried genre 3 and userfiles 0x02, and the changer ACK'd both
+  through the usual ReadyForData choreography;
+- re-read slot 1, which matched the backup ("slot 1 verified"), with
+  genre and userfiles unchanged;
+- treated slots 2 and 3 (still reporting 99) as already matching, not
+  as "different disc", which is the v1.10.1 fix working;
+- read the userfile names, found they matched, and wrote none.
+
+Summary: "1 disc(s) written and verified, 2 already matched, 0 skipped,
+0 not verified." A second restore right after: "0 disc(s) written and
+verified, 3 already matched."
+
+Still untested on hardware: restoring userfile names, restoring the
+program, a genre- or userfiles-only change (which re-sends the disc
+name), and a slot skipped for a track-count mismatch.
+
+Tests: `TestRealRestoreSession` checks that restore planning produces
+the exact two TextData frames from the log.
+
+## v1.10.1 -- Backup: DiscInfo's 99-track placeholder, and a stray track "0"
+
+The user ran the first real export (2026-09-24, raw-byte log), with the
+changer freshly switched on and slot 3 loaded. Then they played slots 2
+and 1 and exported again. Both exports completed, all 200 slots in about
+70 seconds, and saved 3 discs. The log showed two problems.
+
+**1. DiscInfo's track count is only real for discs played since power-on.
+CONFIRMED by the user.** Right after power-on, slot 3 (the loaded disc)
+reported 10 tracks, but slots 1 and 2 reported **99**
+(`02 04 05 00 01 00 01 63 00 92`). After each disc had been played, they
+reported 12 and 13 (`... 01 0c 00 e9`), matching their TOCs. The
+`unknown` byte was 1 for every occupied slot either way, and empty slots
+still report 0, so the Disc Map's occupancy check (count > 0) isn't
+affected. v1.10.0 saved the 99, so restoring after the disc had been
+played would have skipped it as a "different disc" (99 vs 12). The
+reverse case, a backup from a played disc restored right after a
+power-on, would have been skipped too.
+Fix: 99 now means "unknown" (`library_backup.UNKNOWN_TRACK_COUNT`). It's
+saved as `null`, and restore only compares counts when both are known.
+The export summary lists discs whose count wasn't known. Downside: right
+after power-on, restore can't use the track count to check it has the
+right disc. See README "Honest gaps" #19.
+
+Also seen: with a count of 99, a track-names read returns 20 titles,
+with placeholders after the real ones (the manual's 20-title limit).
+With the real count, it returns exactly that many.
+
+**2. A track-names read starts with an index-0 frame that repeats the
+disc name** (`02 fe 20 00 01 00 00 02 01 03 ...`, info_type 1, index 0).
+The app's track-name cache stored it as "track 0", so every disc in both
+backup files had a `"0"` track. `parse_library` rejects track 0, so
+**neither v1.10.0 backup would have restored.** Fix: the export skips
+index 0, and parsing ignores a `"0"` track so the two existing files
+still load (checked against the user's actual files). The Disc Data tab
+only uses tracks 1 and up, so it was never affected.
+
+Tests: 10 more in `test_library_backup.py`, including the logged DiscInfo
+(99 and 12) and index-0 frames, and trimmed entries from the user's own
+v1.10.0 file. The simulated changer now sends the index-0 frame and can
+report 99, like the real one.
+
+## v1.10.0 -- Backup tab: export and restore the library (NOT yet tried on real hardware)
+
+Why: every name, genre and userfile the user has set lives only in the
+changer's memory, and the user has seen that memory get lost or go stale
+after a power outage (the Disc Map caveat). A file backup is the way
+back. It's also a first step toward the library browser and batch gnudb
+tagging, which need the same walk over every slot.
+
+**Export** ("Export Library...") walks slots 1-200. For each one it sends
+DiscInfo, and for each disc it reads the name, track names, genre and
+userfiles. Then it reads the userfile names and the program. It saves
+`.json` (a restorable backup) or `.csv` (a catalog with one row per
+track), depending on the extension you pick. Before reading a slot it
+drops that slot's cached values. So a reply that never arrives shows up
+as `null` in the file instead of a stale value from earlier in the
+session. If the program editor has unwritten edits, it doesn't re-read
+the program, since that would throw them away. Stopping or
+disconnecting partway through saves nothing.
+
+**Restore** ("Restore from Backup...") goes disc by disc. It reads the
+slot, works out what differs (`library_backup.plan_disc_restore`), writes
+only that, then reads the slot again and logs whether it now matches.
+Design choices, all from things already confirmed:
+- Every `WRITE_NAME` carries the backup's genre and userfile mask, since
+  every `TextData` write sets both (v1.5.1, v1.8.1/v1.8.2). If only the
+  genre or userfiles differ, the disc name is re-sent to carry them, the
+  same way the Userfiles tab does it (v1.8.1).
+- It never erases: a name missing from the backup, or `null`, leaves
+  the changer's value alone.
+- It skips a slot whose DiscInfo track count doesn't match the backup,
+  since a different disc has probably moved into that slot.
+- Restoring the program is a separate yes/no, because writing a program
+  starts it playing (v1.8.1).
+- Hand-edited text is folded to ASCII (`ascii_fold`) and disc names are
+  cut to the 25 characters the changer keeps (v1.8.5).
+
+Refactor: `_write_to_changer_worker`'s per-item write moved into
+`_send_text_write` / `_send_write_logged`, and the blocking read into
+`_retrieve_sync`, so the Backup tab reuses them. Log text is unchanged.
+DiscInfo's track count is now cached too (`_disc_track_count`).
+
+Tests: `test_library_backup.py` (46). They run against a simulated changer
+that answers reads the way the CD-425M does and applies writes the way it
+was confirmed to. One test feeds the export frames from real logs (slot
+1's disc-name read-back and track 4 from v1.8.3, and v1.7.1's program).
+See README "Honest gaps" #19 for what the first real run should look at.
+
 ## v1.9.2 -- Cover art CONFIRMED; new DiscID evidence against v1.8.6's rounding theory
 
 The user looked up three discs with v1.9.1 on the real CD-425M against

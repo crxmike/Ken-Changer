@@ -78,8 +78,23 @@ in Program mode, and leaving Program mode clears the program. See
 
 Name writes keep a disc's userfiles too (v1.8.2, confirmed).
 
+**v1.10.0** -- a Backup tab: export the whole library (names, genre,
+userfiles, userfile names, program) to a `.json` backup or `.csv`
+catalog, and restore a `.json` backup (only writes what differs,
+re-reads each slot to check it). Export has run on the real changer; it
+exposed two bugs, fixed in **v1.10.1**: DiscInfo reports 99 tracks for
+discs not played since power-on (CONFIRMED; now treated as unknown), and a
+stray track "0" (the disc name repeated) that stopped backups restoring.
+**v1.10.2: export and restore CONFIRMED on real hardware.** Two
+hand-edited track names were restored and verified, and a second restore
+wrote nothing. See `CHANGELOG.md`'s v1.10.0-v1.10.2 entries and README
+"Honest gaps" #19.
+
 ## In progress / next up
 
+- **Backup tab: confirmed (v1.10.2).** Untried corners: restoring
+  userfile names, restoring the program, a genre- or userfiles-only
+  change, and a track-count-mismatch skip.
 - Nothing open on userfiles/programs. Untried corner: writing an empty
   program (to clear it).
 - **gnudb.org: live round-trip CONFIRMED** (v1.8.3 session: query ->
@@ -116,6 +131,11 @@ Name writes keep a disc's userfiles too (v1.8.2, confirmed).
 - `gnudb_client.py` -- gnudb.org HTTP client (stdlib only).
 - `album_art.py` -- cover art: gnudb's own links, then iTunes (v1.9.1;
   needs Pillow).
+- `library_backup.py` -- Backup tab file format and restore planning
+  (v1.10.0).
+- `test_library_backup.py` -- tests for the Backup tab, against a
+  simulated changer plus frames from real logs; export and restore
+  confirmed on real hardware (v1.10.2).
 - `test_write_feature.py` -- tests for the write-to-changer feature
   (names, confirmed; genre/program/userfiles encoders, round-trip only).
 - `test_mode_feature.py` -- tests for the v1.6.0 Play Mode selector

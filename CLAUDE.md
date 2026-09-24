@@ -35,11 +35,13 @@ rule carried over from this project's prior work. Concretely:
 
 See `START_HERE.md`'s "Current status" and "In progress / next up"
 sections for the live state -- don't duplicate it here since it'll go
-stale. As of the last update: v1.9.2 (names, genre, reading and
-writing userfiles/program, the gnudb.org lookup and gnudb cover art all
-confirmed; exact gnudb DiscID matches don't happen on this changer, most
-likely because gnudb stores those entries under non-standard IDs rather
-than because of the whole-second TOC -- see CHANGELOG v1.9.2).
+stale. As of the last update: v1.10.2 (names, genre, reading and
+writing userfiles/program, the gnudb.org lookup, gnudb cover art, and
+the Backup tab's export/restore all confirmed; exact gnudb DiscID
+matches don't happen on this changer, most likely because gnudb stores
+those entries under non-standard IDs -- see CHANGELOG v1.9.2; DiscInfo
+reports 99 tracks for discs not played since power-on -- see CHANGELOG
+v1.10.1).
 
 ## Files
 
@@ -50,6 +52,8 @@ than because of the whole-second TOC -- see CHANGELOG v1.9.2).
 - `gnudb_client.py` -- gnudb.org HTTP client (stdlib only).
 - `album_art.py` -- cover art: gnudb's own `# Cover:` links, then an
   iTunes search (v1.9.1; needs Pillow).
+- `library_backup.py` -- Backup tab: backup file format and restore
+  planning (v1.10.0).
 - `test_write_feature.py` -- tests for the in-progress write feature.
 - `test_genre_feature.py` -- tests for the genre read/write feature
   (v1.4.0).
@@ -63,6 +67,8 @@ than because of the whole-second TOC -- see CHANGELOG v1.9.2).
   mocked (v1.8.3).
 - `test_album_art.py` -- tests for the cover art lookup, network mocked
   (v1.9.0).
+- `test_library_backup.py` -- tests for library backup/restore against a
+  simulated changer (v1.10.0).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

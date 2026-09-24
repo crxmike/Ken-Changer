@@ -16,12 +16,13 @@ against real hardware yet.
 
 from __future__ import annotations
 
+import datetime
 import queue
 import threading
 import time
 import unicodedata
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 try:
     from serial.tools import list_ports
@@ -35,6 +36,7 @@ from pclink_link import (
 from pclink_protocol import Frame
 import gnudb_client
 import album_art
+import library_backup
 
 
 MODE_CHANGE_TIMEOUT_MS = 5000  # how long to wait for an InfoEvent after Set Mode
@@ -182,7 +184,24 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # v1.9.2 -- cover art CONFIRMED on screen (3 discs, all from gnudb's own
 # links). Docs/tests only, plus DiscID evidence against v1.8.6's rounding
 # theory (see CHANGELOG.md).
-APP_VERSION = "1.9.2"
+# v1.10.0 -- Backup tab: export every slot's names, genre and userfiles
+# (plus userfile names and the program) to a .json backup or .csv catalog,
+# and restore a .json backup, writing only what differs and re-reading each
+# slot to check it (library_backup.py). Reads and writes use only paths
+# already CONFIRMED; the 200-slot walk and the restore itself are NOT yet
+# tried on real hardware.
+# v1.10.1 -- first real export: works, but DiscInfo reports 99 tracks for
+# every disc not played since power-on (CONFIRMED), which v1.10.0 saved
+# as-is and restore would have read as "different disc". 99 is now
+# "unknown" (null in the file, never a mismatch). Also, a track-names
+# read starts with an index-0 frame repeating the disc name; that went
+# into backups as track "0", which restore rejected. Both fixed, and
+# v1.10.0 files still load. The fixes aren't tried on real hardware yet.
+# v1.10.2 -- export and restore CONFIRMED on real hardware (v1.10.1): two
+# hand-edited track names were written back and verified, unplayed (99)
+# slots matched instead of being skipped, and a second restore wrote
+# nothing. Docs/tests only.
+APP_VERSION = "1.10.2"
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -709,6 +728,7 @@ class App(tk.Tk):
         # 200 Slots". Changer-sourced, so cleared on disconnect like the
         # other caches -- see _reset_disc_map / _disconnect.
         self._disc_occupancy: dict[int, bool] = {}
+        self._disc_track_count: dict[int, int] = {}  # slot -> DiscInfo track_count (v1.10.0)
         self._disc_map_cells: dict[int, int] = {}  # slot -> canvas rectangle item id
         self._disc_map_stop = threading.Event()
         self._disc_map_scanning = False
@@ -725,6 +745,10 @@ class App(tk.Tk):
         self._program_draft: list[tuple[int, int]] = []
         self._program_draft_dirty = False
         self._userfile_scan_running = False
+
+        # Backup tab (v1.10.0): one export or restore at a time.
+        self._library_running = False
+        self._library_stop = threading.Event()
 
         # Mode code from the last "Set Mode" click, until an InfoEvent
         # reports it. Confirmed on real hardware: the changer ACKs a
@@ -777,6 +801,9 @@ class App(tk.Tk):
 
         uf_prog_tab = ttk.Frame(notebook, padding=4)
         notebook.add(uf_prog_tab, text="Userfiles & Program")
+
+        backup_tab = ttk.Frame(notebook, padding=4)
+        notebook.add(backup_tab, text="Backup")
 
         control_tab.columnconfigure(0, weight=1)
         control_tab.columnconfigure(1, weight=1)
@@ -1207,6 +1234,37 @@ class App(tk.Tk):
         self.prog_tree.pack(fill="both", expand=True, pady=(4, 0))
         self._refresh_userfiles_view()
 
+        # -- Backup tab (v1.10.0) ---------------------------------------------
+        ttk.Label(
+            backup_tab, wraplength=860, justify="left",
+            text="Export reads every slot (disc names, track names, genre, userfiles), plus "
+                 "the userfile names and the program, and saves them to a file. Save as "
+                 ".json for a backup you can restore, or .csv for a catalog to read or print. "
+                 "It reads all 200 slots, so it takes a while.",
+        ).pack(anchor="w", pady=(0, 4))
+        ttk.Label(
+            backup_tab, wraplength=860, justify="left", foreground="#a05a00",
+            text="Restore writes a .json backup back to the changer. It only writes what "
+                 "differs, never erases a name the backup doesn't have, and skips any slot "
+                 "whose track count doesn't match the backup (probably a different disc; only "
+                 "checked when the changer knows the count, i.e. the disc has been played "
+                 "since power-on). "
+                 "Each slot is re-read afterward to check it.",
+        ).pack(anchor="w", pady=(0, 6))
+        backup_toolbar = ttk.Frame(backup_tab)
+        backup_toolbar.pack(fill="x")
+        self.backup_export_btn = ttk.Button(backup_toolbar, text="Export Library...",
+                                            command=self._start_library_export)
+        self.backup_export_btn.pack(side="left", padx=2)
+        self.backup_restore_btn = ttk.Button(backup_toolbar, text="Restore from Backup...",
+                                             command=self._start_library_restore)
+        self.backup_restore_btn.pack(side="left", padx=2)
+        self.backup_stop_btn = ttk.Button(backup_toolbar, text="Stop", state="disabled",
+                                          command=self._library_stop.set)
+        self.backup_stop_btn.pack(side="left", padx=2)
+        self.backup_progress_label = ttk.Label(backup_toolbar, text="")
+        self.backup_progress_label.pack(side="left", padx=12)
+
         # -- Log console (outside the notebook -- visible on every tab) ---------
         log_frame = ttk.LabelFrame(body, text="Log", padding=4)
         log_frame.pack(fill="both", expand=False, pady=(4, 0))
@@ -1301,6 +1359,7 @@ class App(tk.Tk):
 
     def _disconnect(self):
         self._release_hold()
+        self._library_stop.set()
         if self.link:
             self.link.close()
             self.link = None
@@ -1413,6 +1472,7 @@ class App(tk.Tk):
                 # might be the better field to key off instead.
                 occupied = (p.get("track_count") or 0) > 0
                 self._disc_occupancy[slot] = occupied
+                self._disc_track_count[slot] = p.get("track_count") or 0
                 self.ui_queue.put(lambda s=slot, o=occupied: self._update_disc_map_cell(s, o))
 
         elif frame.command == proto.CMD_DISC_TOC:
@@ -2235,17 +2295,27 @@ class App(tk.Tk):
         }
         for item in what:
             data_type, info_type = requests[item]
-            data = proto.encode_data_access(proto.Action.RETRIEVE_DATA, data_type,
-                                            slot=slot, info_type=info_type)
-            for attempt in range(3):
-                try:
-                    link.send(proto.CMD_DATA_ACCESS, data)
-                    break
-                except PCLinkTimeout:
-                    time.sleep(0.1)  # likely a bus collision, see _send_bg
-                except PCLinkError as exc:
-                    self._log(f"Reading slot {slot}'s {item} failed: {exc}")
-                    break
+            self._retrieve_sync(link, data_type, slot, info_type, item)
+
+    def _retrieve_sync(self, link: PCLinkConnection, data_type: int, slot: int,
+                       info_type: int = 0, what: str = "data") -> bool:
+        """Background thread: one blocking RETRIEVE_DATA request, retrying a
+        timeout twice (likely a bus collision, see _send_bg). Replies are
+        cached by _on_frame before this returns. False if it never went
+        through."""
+        data = proto.encode_data_access(proto.Action.RETRIEVE_DATA, data_type,
+                                        slot=slot, info_type=info_type)
+        for attempt in range(3):
+            try:
+                link.send(proto.CMD_DATA_ACCESS, data)
+                return True
+            except PCLinkTimeout:
+                time.sleep(0.1)
+            except PCLinkError as exc:
+                self._log(f"Reading slot {slot}'s {what} failed: {exc}")
+                return False
+        self._log(f"Reading slot {slot}'s {what} timed out.")
+        return False
 
     def _write_to_changer_worker(self, link: PCLinkConnection, slot: int, items: list,
                                  userfiles: int = 0, on_done=None):
@@ -2271,39 +2341,12 @@ class App(tk.Tk):
         ok = 0
         failed = 0
         wrote_genre = False
-        for index, text, info_type, label, genre in items:
-            request_data = proto.encode_data_access(
-                proto.Action.WRITE_NAME, proto.DataType.TEXT_DATA,
-                slot=slot, info_type=info_type,
-            )
-            follow_up_data = proto.encode_text_data(
-                slot=slot, index=index, text=text, info_type=info_type, genre=genre,
-                userfiles=userfiles,
-            )
-            try:
-                link.send_write(
-                    proto.CMD_DATA_ACCESS, request_data,
-                    proto.CMD_TEXT_DATA, follow_up_data,
-                )
-                suffix = " (genre attached)" if genre else ""
-                self._log(f"Write to Changer: {label} -> {text!r} written ok{suffix}.")
+        for item in items:
+            if self._send_text_write(link, slot, item, userfiles, "Write to Changer"):
                 ok += 1
-                if genre:
+                if item[4]:
                     wrote_genre = True
-            except PCLinkWriteUnconfirmed:
-                self._log(
-                    f"Write to Changer: {label} -- changer never sent ReadyForData, "
-                    "not written."
-                )
-                failed += 1
-            except PCLinkNak:
-                self._log(f"Write to Changer: {label} -- changer NAK'd the write.")
-                failed += 1
-            except PCLinkTimeout:
-                self._log(f"Write to Changer: {label} -- timed out.")
-                failed += 1
-            except PCLinkError as exc:
-                self._log(f"Write to Changer: {label} -- error: {exc}")
+            else:
                 failed += 1
 
         self._log(f"Write to Changer: done -- {ok} written, {failed} failed.")
@@ -2345,6 +2388,45 @@ class App(tk.Tk):
                 f"DataAccess(DiscUserfiles, slot={slot})",
             )
         self.ui_queue.put(on_done or (lambda: self.dd_write_btn.configure(state="normal")))
+
+    def _send_text_write(self, link: PCLinkConnection, slot: int, item: tuple, userfiles: int,
+                         log_prefix: str) -> bool:
+        """One WRITE_NAME (the CONFIRMED name-write path) for an
+        (index, text, info_type, label, genre) item, logged. True if the
+        changer took it."""
+        index, text, info_type, label, genre = item
+        request_data = proto.encode_data_access(
+            proto.Action.WRITE_NAME, proto.DataType.TEXT_DATA,
+            slot=slot, info_type=info_type,
+        )
+        follow_up_data = proto.encode_text_data(
+            slot=slot, index=index, text=text, info_type=info_type, genre=genre,
+            userfiles=userfiles,
+        )
+        suffix = " (genre attached)" if genre else ""
+        return self._send_write_logged(
+            link, f"{log_prefix}: {label}", request_data, proto.CMD_TEXT_DATA, follow_up_data,
+            ok_note=f" -> {text!r} written ok{suffix}.",
+        )
+
+    def _send_write_logged(self, link: PCLinkConnection, label: str, request_data: bytes,
+                           follow_up_command: int, follow_up_data: bytes,
+                           ok_note: str = ": written ok.") -> bool:
+        """One blocking send_write(), with the outcome logged. True if the
+        changer took it."""
+        try:
+            link.send_write(proto.CMD_DATA_ACCESS, request_data, follow_up_command, follow_up_data)
+            self._log(f"{label}{ok_note}")
+            return True
+        except PCLinkWriteUnconfirmed:
+            self._log(f"{label} -- changer never sent ReadyForData, not written.")
+        except PCLinkNak:
+            self._log(f"{label} -- changer NAK'd the write.")
+        except PCLinkTimeout:
+            self._log(f"{label} -- timed out.")
+        except PCLinkError as exc:
+            self._log(f"{label} -- error: {exc}")
+        return False
 
     def _copy_column_to_custom(self, source: str):
         var_key = "changer_var" if source == "changer" else "gnudb_var"
@@ -3022,11 +3104,291 @@ class App(tk.Tk):
         self.uf_progress_label.configure(text="Done.")
         self._refresh_userfiles_view()
 
+    # ------------------------------------------------------------------
+    # Backup tab (v1.10.0) -- see library_backup.py
+    # ------------------------------------------------------------------
+
+    def _read_slot_state_sync(self, link: PCLinkConnection, slot: int) -> dict:
+        """Background thread: read everything a backup holds for one slot.
+        The slot's cached values are dropped first, so a reply that never
+        comes shows up as None rather than as a stale value. Keys match
+        a parsed backup disc (see library_backup.plan_disc_restore)."""
+        state = {"track_count": None, "name": None, "tracks": None, "genre": None, "userfiles": None}
+        self._disc_track_count.pop(slot, None)
+        if not self._retrieve_sync(link, proto.DataType.DISC_INFO, slot, what="disc info"):
+            return state
+        state["track_count"] = self._disc_track_count.get(slot)
+        if not state["track_count"]:
+            return state
+        self._disc_name_cache.pop(slot, None)
+        self._track_name_cache.pop(slot, None)
+        self._genre_cache.pop(slot, None)
+        self._userfiles_cache.pop(slot, None)
+        if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot, proto.InfoType.DISC_NAMES,
+                               "disc name"):
+            state["name"] = self._disc_name_cache.get(slot)
+        if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot, proto.InfoType.TRACK_NAMES,
+                               "track names"):
+            state["tracks"] = dict(self._track_name_cache.get(slot, {}))
+        if self._retrieve_sync(link, proto.DataType.DISC_GENRE, slot, what="genre"):
+            state["genre"] = self._genre_cache.get(slot)
+        if self._retrieve_sync(link, proto.DataType.DISC_USERFILES, slot, what="userfiles"):
+            state["userfiles"] = self._userfiles_cache.get(slot)
+        return state
+
+    def _library_can_start(self) -> PCLinkConnection | None:
+        link = self._require_link()
+        if link is None or self._library_running:
+            return None
+        if self._disc_map_scanning or self._userfile_scan_running:
+            messagebox.showinfo("Busy", "Wait for the Disc Map or Userfiles scan to finish first.")
+            return None
+        return link
+
+    def _library_begin(self, text: str):
+        self._library_running = True
+        self._library_stop.clear()
+        self.backup_export_btn.configure(state="disabled")
+        self.backup_restore_btn.configure(state="disabled")
+        self.backup_stop_btn.configure(state="normal")
+        self.backup_progress_label.configure(text=text)
+
+    def _library_progress(self, text: str):
+        self.ui_queue.put(lambda: self.backup_progress_label.configure(text=text))
+
+    def _library_finish(self, text: str, message: str | None = None):
+        """Background thread: hand the end of an export/restore to the UI."""
+        self._log(text)
+
+        def done():
+            self._library_running = False
+            self.backup_export_btn.configure(state="normal")
+            self.backup_restore_btn.configure(state="normal")
+            self.backup_stop_btn.configure(state="disabled")
+            self.backup_progress_label.configure(text=text)
+            if message:
+                messagebox.showinfo("Backup", message)
+        self.ui_queue.put(done)
+
+    def _start_library_export(self):
+        link = self._library_can_start()
+        if link is None:
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Export Library", defaultextension=".json",
+            initialfile=f"changer-library-{datetime.date.today().isoformat()}.json",
+            filetypes=[("Backup, restorable (*.json)", "*.json"), ("Catalog (*.csv)", "*.csv")],
+        )
+        if not path:
+            return
+        self._library_begin("Starting export...")
+        self._log(f"Export: reading all {self.DISC_MAP_SLOT_COUNT} slots, then saving to {path}")
+        threading.Thread(target=self._library_export_worker, args=(link, path), daemon=True).start()
+
+    def _library_export_worker(self, link: PCLinkConnection, path: str):
+        discs, unreadable = [], []
+        for slot in range(1, self.DISC_MAP_SLOT_COUNT + 1):
+            if self._library_stop.is_set() or self.link is not link:
+                self._library_finish("Export stopped -- nothing was saved.")
+                return
+            self._library_progress(
+                f"Reading slot {slot}/{self.DISC_MAP_SLOT_COUNT} ({len(discs)} disc(s) so far)...")
+            state = self._read_slot_state_sync(link, slot)
+            if state["track_count"] is None:
+                unreadable.append(slot)
+            elif state["track_count"]:
+                discs.append(library_backup.disc_record(slot, **state))
+
+        self._library_progress("Reading userfile names and the program...")
+        self._userfile_name_cache.clear()
+        names = None
+        if self._retrieve_sync(link, proto.DataType.TEXT_DATA, 0, proto.InfoType.USERFILE_NAMES,
+                               "userfile names"):
+            names = dict(self._userfile_name_cache)
+        if self._program_draft_dirty:
+            # Reading the program replaces the editor's draft.
+            self._log("Export: the program editor has unwritten edits, so the program wasn't "
+                      "re-read; saving the last program read instead.")
+            program = self._program_items
+        else:
+            self._program_items = None
+            program = None
+            if self._retrieve_sync(link, proto.DataType.DISC_LISTING, 0, what="program"):
+                program = self._program_items
+
+        library = library_backup.build_library(
+            discs, names, program, APP_VERSION,
+            datetime.datetime.now().isoformat(timespec="seconds"),
+        )
+        as_csv = path.lower().endswith(".csv")
+        text = library_backup.library_to_csv(library) if as_csv else library_backup.library_to_json(library)
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+        except OSError as exc:
+            self._library_finish(f"Export: couldn't save {path}: {exc}", f"Couldn't save the file:\n{exc}")
+            return
+
+        unknown_counts = [d["slot"] for d in discs if d["track_count"] is None]
+        incomplete = [d["slot"] for d in discs
+                      if any(d[k] is None for k in ("name", "tracks", "genre", "userfiles"))]
+        notes = []
+        if unreadable:
+            notes.append(f"{len(unreadable)} slot(s) couldn't be read: {unreadable}")
+        if unknown_counts:
+            notes.append(f"{len(unknown_counts)} disc(s) haven't been played since the changer "
+                         f"was switched on, so their track count isn't known yet (null in the "
+                         f"file, and restore can't use it to check the disc): {unknown_counts}")
+        if incomplete:
+            notes.append(f"{len(incomplete)} disc(s) are missing a value (null in the file): {incomplete}")
+        if names is None:
+            notes.append("the userfile names couldn't be read")
+        if program is None:
+            notes.append("the program couldn't be read")
+        for note in notes:
+            self._log(f"Export: {note}.")
+        self._library_finish(
+            f"Export: saved {len(discs)} disc(s) to {path}.",
+            f"Saved {len(discs)} disc(s) to {path}."
+            + ("\n\nNote: " + "; ".join(notes) + ". See the log." if notes else ""),
+        )
+
+    def _start_library_restore(self):
+        link = self._library_can_start()
+        if link is None:
+            return
+        path = filedialog.askopenfilename(
+            parent=self, title="Restore from Backup",
+            filetypes=[("Library backup (*.json)", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                library = library_backup.parse_library(f.read(), fold=ascii_fold)
+        except (OSError, UnicodeDecodeError, library_backup.LibraryError) as exc:
+            messagebox.showerror("Restore from Backup", str(exc))
+            return
+        discs, names, program = library["discs"], library["userfile_names"], library["program"]
+        if not messagebox.askyesno(
+            "Restore from Backup",
+            f"Restore {len(discs)} disc(s) and {len(names)} userfile name(s) from the backup "
+            f"made {library['exported_at'] or '(date unknown)'}?\n\n"
+            "Only values that differ from the changer are written, nothing is erased, and "
+            "slots whose track count doesn't match the backup are skipped (when the "
+            "count is known).",
+        ):
+            return
+        restore_program = bool(program) and messagebox.askyesno(
+            "Restore the program too?",
+            f"The backup also has a {len(program)}-step program. Write it too?\n\n"
+            "Writing a program makes the changer switch to Program mode and start playing it.",
+        )
+        self._library_begin("Starting restore...")
+        self._log(f"Restore: from {path} -- {len(discs)} disc(s)"
+                  f"{', plus the program' if restore_program else ''}.")
+        threading.Thread(target=self._library_restore_worker,
+                         args=(link, library, restore_program), daemon=True).start()
+
+    def _library_restore_worker(self, link: PCLinkConnection, library: dict, restore_program: bool):
+        """For each backed-up disc: read the slot, write what differs
+        (library_backup.plan_disc_restore), then read it again and check
+        nothing still differs."""
+        verified, unchanged, skipped, failed = 0, 0, [], []
+        discs = library["discs"]
+        for i, saved in enumerate(discs, start=1):
+            if self._library_stop.is_set() or self.link is not link:
+                self._library_stop.set()
+                break
+            slot = saved["slot"]
+            self._library_progress(f"Restoring slot {slot} ({i}/{len(discs)})...")
+            items, mask, reason = library_backup.plan_disc_restore(
+                saved, self._read_slot_state_sync(link, slot))
+            if reason:
+                self._log(f"Restore: slot {slot} skipped -- {reason}.")
+                skipped.append(slot)
+                continue
+            if not items:
+                unchanged += 1
+                continue
+            self._log(f"Restore: slot {slot} -- writing {len(items)} value(s) "
+                      f"(genre={items[0][4]}, userfiles=0x{mask:02X})...")
+            for item in items:
+                self._send_text_write(link, slot, item, mask, f"Restore slot {slot}")
+            left, _, why = library_backup.plan_disc_restore(saved, self._read_slot_state_sync(link, slot))
+            if why or left:
+                detail = why or "still different: " + ", ".join(item[3] for item in left)
+                self._log(f"Restore: slot {slot} NOT verified after writing -- {detail}.")
+                failed.append(slot)
+            else:
+                self._log(f"Restore: slot {slot} verified -- re-read matches the backup.")
+                verified += 1
+
+        names_note = ""
+        if library["userfile_names"] and not self._library_stop.is_set():
+            names_note = self._restore_userfile_names_sync(link, library["userfile_names"])
+        program_note = ""
+        if restore_program and not self._library_stop.is_set():
+            program_note = self._restore_program_sync(link, library["program"])
+
+        stopped = " (stopped early)" if self._library_stop.is_set() else ""
+        summary = (f"Restore{stopped}: {verified} disc(s) written and verified, {unchanged} already "
+                   f"matched, {len(skipped)} skipped, {len(failed)} not verified.")
+        details = []
+        if skipped:
+            details.append(f"Skipped slots: {skipped}")
+        if failed:
+            details.append(f"Not verified: {failed}")
+        details += [n for n in (names_note, program_note) if n]
+        self._library_finish(summary, summary + ("\n\n" + "\n".join(details) if details else "")
+                             + "\n\nSee the log for details.")
+
+    def _restore_userfile_names_sync(self, link: PCLinkConnection, saved: dict[int, str]) -> str:
+        self._library_progress("Restoring userfile names...")
+        self._userfile_name_cache.clear()
+        if not self._retrieve_sync(link, proto.DataType.TEXT_DATA, 0, proto.InfoType.USERFILE_NAMES,
+                                   "userfile names"):
+            return "Userfile names: couldn't read the current ones, so none were written."
+        todo = library_backup.plan_userfile_names_restore(saved, self._userfile_name_cache)
+        for number, name in todo:
+            try:
+                request_data, follow_up_data = build_userfile_name_write(number, name)
+            except ValueError as exc:
+                self._log(f"Restore: userfile #{number} name {name!r} not written -- {exc}")
+                continue
+            self._send_write_logged(link, f"Restore: userfile #{number} -> {name!r}",
+                                    request_data, proto.CMD_TEXT_DATA, follow_up_data)
+        if not todo:
+            return "Userfile names: already matched."
+        self._retrieve_sync(link, proto.DataType.TEXT_DATA, 0, proto.InfoType.USERFILE_NAMES,
+                            "userfile names")
+        left = library_backup.plan_userfile_names_restore(saved, self._userfile_name_cache)
+        if left:
+            return f"Userfile names: {len(left)} still differ after writing: {[n for n, _ in left]}"
+        return f"Userfile names: {len(todo)} written and verified."
+
+    def _restore_program_sync(self, link: PCLinkConnection, steps: list[tuple[int, int]]) -> str:
+        self._library_progress("Restoring the program...")
+        try:
+            request_data, follow_up_data = build_program_write(steps)
+        except ValueError as exc:
+            self._log(f"Restore: program not written -- {exc}")
+            return f"Program: not written ({exc})."
+        if not self._send_write_logged(link, f"Restore: program ({len(steps)} step(s))",
+                                       request_data, proto.CMD_DISC_LISTING, follow_up_data):
+            return "Program: the write failed."
+        self._program_items = None
+        self._retrieve_sync(link, proto.DataType.DISC_LISTING, 0, what="program")
+        if self._program_items is not None and program_steps_from_items(self._program_items) == steps:
+            return f"Program: {len(steps)} step(s) written and verified."
+        return "Program: written, but the re-read didn't match."
+
     def _reset_disc_map(self):
         """Changer-sourced state, so cleared on disconnect like the other
         caches (_disc_name_cache etc.) -- what was in slot 17 last session
         isn't necessarily still true this session."""
         self._disc_occupancy.clear()
+        self._disc_track_count.clear()
         self._disc_map_stop.set()
         self._disc_map_scanning = False
         if hasattr(self, "disc_map_scan_btn"):

@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.9.2 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.10.2 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
 and programs + gnudb.org lookup with cover art, all confirmed working
 against real CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
@@ -16,6 +16,8 @@ gaps" #14 and `CHANGELOG.md`'s v1.4.1-v1.5.1 entries for the full history
 if you're extending this. v1.8.0 adds writing userfiles and programs
 (see "Honest gaps" #17). v1.6.x adds a play
 mode selector (`ChangeMode`), **partly confirmed on real hardware**.
+v1.10.0 adds a Backup tab (export the library to a file, and restore
+it), **confirmed on real hardware in v1.10.2** (see "Honest gaps" #19).
 
 A small desktop app for controlling a Kenwood CD-425M CD changer (also
 compatible with the CD-4700M / CD-4260M, which use the same command set)
@@ -145,6 +147,19 @@ python pclink_app.py
   a disc is in, and edit and write the program (up to 32 steps). Writing
   a program also starts it playing in Program mode, and switching to
   another play mode clears it. See "Honest gaps" #17.
+- **Backup tab** (v1.10.0, **export and restore confirmed on real
+  hardware in v1.10.2**; see "Honest gaps" #19). "Export Library..." reads all 200 slots (DiscInfo,
+  then for each disc its name, track names, genre and userfiles), plus
+  the userfile names and the program, and saves them. Save as `.json`
+  for a backup you can restore, or `.csv` for a catalog (one row per
+  track) to read or print. It also fills in the Disc Map as it goes.
+  "Restore from Backup..." writes a `.json` backup back: for each disc it
+  reads the slot, writes only what differs, then reads it again and logs
+  whether it now matches. It never erases a name the backup doesn't
+  have, and it skips a slot whose track count doesn't match the backup,
+  since that's probably a different disc. Restoring the program is a
+  separate yes/no, because writing a program starts it playing. The file
+  format is described at the top of `library_backup.py`.
 - **Log console** with a "show raw bytes" toggle, so you can see the actual
   ENQ/ACK/STX/EOT byte exchange -- useful both for troubleshooting your
   specific unit and for extending the app later.
@@ -304,6 +319,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
 - `album_art.py` -- cover art for a gnudb entry: the entry's own cover
   links first, then an iTunes search. Decodes with Pillow; tested in
   `test_album_art.py`.
+- `library_backup.py` -- the Backup tab's file format and restore
+  planning (no serial or Tkinter dependency; tested in
+  `test_library_backup.py`).
 
 ## Protocol summary (for reference)
 
@@ -732,6 +750,35 @@ exactly what's happening):
      image server for a PNG (an undocumented conversion) so Tkinter could
      show it without Pillow. With Pillow that trick isn't needed; the
      fallback now downloads iTunes' ordinary JPEG.
+19. **Library backup and restore -- CONFIRMED on real hardware
+   (v1.10.2).** All 200 slots export in about 70 seconds with 3 discs.
+   The first export exposed two bugs, fixed in v1.10.1 (see below). With
+   v1.10.1, the user hand-edited two track names. Restore wrote back
+   exactly those two, verified them on re-read, and treated the unplayed
+   (99-track) slots as matching. A second restore wrote nothing. See
+   `CHANGELOG.md` v1.10.2. **Still untested:** restoring userfile names,
+   restoring the program, a genre- or userfiles-only change (which
+   re-sends the disc name), and a slot skipped for a track-count
+   mismatch. Notes:
+   - **DiscInfo's track count is 99 for any disc not played since the
+     changer was switched on (CONFIRMED).** Only discs played since
+     power-on report a real count. Backups save 99 as `null`, and
+     restore only compares counts when both are known. So **right after
+     power-on, restore can't use the track count to check it has the
+     right disc.** Playing each disc once first gets that check back.
+   - **A track-names read starts with an index-0 frame repeating the
+     disc name (CONFIRMED).** v1.10.0 backed it up as track "0", which
+     broke restore; v1.10.1 skips it and ignores it in older files.
+   - **A disc with no name stored.** The export assumes the changer sends a
+     placeholder (`'\x01'`), which becomes `""` in the file. If it sends
+     nothing at all, the name shows up as `null` ("couldn't read") instead.
+   - **Restore's track-count check** is the only thing stopping a backup
+     being written onto a different disc that moved into the slot. Two
+     different discs with the same number of tracks would pass it, and it
+     does nothing when either count is unknown (see above).
+   - **Tracks 21+** (the manual's 20-title limit, see "Owner's manual
+     notes") are backed up if the changer returns them, and restore
+     writes them. It's still unknown what the changer does with those.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.
