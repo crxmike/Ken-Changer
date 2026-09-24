@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.11.1 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.12.1 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
 and programs + gnudb.org lookup with cover art, all confirmed working
 against real CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
@@ -20,6 +20,8 @@ v1.10.0 adds a Backup tab (export the library to a file, and restore
 it), **confirmed on real hardware in v1.10.2** (see "Honest gaps" #19).
 v1.11.0 adds a Library tab (browse, search and play every disc),
 **confirmed on real hardware in v1.11.1** (see "Honest gaps" #20).
+v1.12.0 lets the Library tab add a disc to a userfile (or take it out),
+**confirmed on real hardware in v1.12.1** (see "Honest gaps" #21).
 
 A small desktop app for controlling a Kenwood CD-425M CD changer (also
 compatible with the CD-4700M / CD-4260M, which use the same command set)
@@ -174,7 +176,11 @@ python pclink_app.py
   and a click on a column heading sorts. Double-click (or Play) plays a
   disc or track via `ChangeDisc`. "Load in Disc Data Tab" loads the disc
   and switches to that tab, which only shows the loaded disc. "Rescan
-  Disc" re-reads one slot.
+  Disc" re-reads one slot. **v1.12.0 (confirmed in v1.12.1, "Honest
+  gaps" #21):** the "Userfiles" menu, or a right-click on a disc, adds the
+  disc to a userfile or takes it out. The Userfiles & Program tab also
+  shows the saved scan's discs (marked "*") until the changer reports
+  them this session.
 - **Log console** with a "show raw bytes" toggle, so you can see the actual
   ENQ/ACK/STX/EOT byte exchange -- useful both for troubleshooting your
   specific unit and for extending the app later.
@@ -816,6 +822,23 @@ exactly what's happening):
      after renaming or re-tagging a disc.
    - **The saved scan can go stale** (discs moved, or renamed from the
      remote). The tab shows the scan's date; "Scan Changer" refreshes it.
+21. **Adding a disc to a userfile from the Library tab -- CONFIRMED on
+   real hardware (v1.12.1).** It uses the confirmed membership write
+   (#17: the disc name re-sent with the new userfile mask and the disc's
+   genre). Because the Library's data may be stale, the slot is read
+   fresh from the changer first, and the write is built from that read.
+   Nothing is written if the slot now holds a different disc name, has
+   no name, or can't be read. In the first real run, adding slot 1 to #3
+   (`0x02` -> `0x06`) and taking it out again (`0x06` -> `0x02`) both
+   read back exactly, with the genre and every name unchanged.
+   - Since v1.12.1 (**confirmed on real hardware**), the Userfiles &
+     Program tab fills in discs the changer hasn't reported this session
+     from the Library's saved scan, marked "*". That is display only;
+     writes still read the disc from the changer first. "Read Userfiles
+     for Known Discs" reads the scan's slots too, so it works without a
+     Disc Map scan.
+   Known limit: a disc with no name can't be added (same as the
+   Userfiles & Program tab); name it on the Disc Data tab first.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

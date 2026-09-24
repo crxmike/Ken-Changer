@@ -98,7 +98,18 @@ It can also show a `.json` backup file offline. Play/double-click sends
 tabs. **v1.11.1: CONFIRMED on real hardware.** See README "Honest gaps"
 #20 and `CHANGELOG.md` v1.11.1.
 
+**v1.12.0** -- the Library tab can add a disc to a userfile or take it
+out (the "Userfiles" menu, or a right-click on a disc). It uses the
+confirmed membership write, after re-reading the slot so a stale scan
+can't rename a disc. **v1.12.1: CONFIRMED on real hardware.** v1.12.1
+also fills in the Userfiles & Program tab from the Library's saved scan
+(marked "*") until the changer reports each disc. See README "Honest
+gaps" #21.
+
 ## In progress / next up
+
+- **Library userfiles and the Userfiles tab's saved-scan rows: confirmed
+  (v1.12.1).**
 
 - **Library tab: confirmed (v1.11.1).** Possible follow-ups: have
   it follow writes made on other tabs (it needs "Rescan Disc" today),

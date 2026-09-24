@@ -1,5 +1,85 @@
 # Changelog
 
+## v1.12.1 -- Library userfiles CONFIRMED; the Userfiles tab uses the saved scan (CONFIRMED)
+
+**v1.12.0 confirmed on the real CD-425M** (2026-09-24, raw-byte log).
+Slot 1 was in userfile #2 (`0x02`):
+- Add to #3: the slot was re-read first (DiscInfo, name, track names,
+  genre, userfiles `0x02`). Then the disc name was re-sent with `0x06`
+  and genre `0x03` (`02 fe 20 00 01 00 00 06 00 03 00 ... 31`). The
+  changer sent ReadyForData (raw byte 1) and ACK'd. The re-read showed
+  `0x06` on DiscUserfiles, the disc name and every track, with the genre
+  still Alternative Rock and every name unchanged.
+- Take out of #3: the same steps, writing `0x02`
+  (`02 fe 20 00 01 00 00 02 00 03 00 ... 35`), and the re-read showed
+  `0x02`.
+- A ChangeDisc to slot 1 afterward reported `userfiles` 2 in its
+  InfoEvent, so the changer's own play state agrees.
+
+**The Userfiles & Program tab ignored the Library's saved scan** (user
+report). Its table is built from the userfiles the changer has reported
+this session, and those are cleared on disconnect as changer-sourced
+state. So after a restart it showed only the loaded disc until a Disc Map
+scan plus "Read Userfiles for Known Discs" (or a Library scan) re-read
+every disc, even though `library_cache.json` already had them all. Now:
+- Any disc the changer hasn't reported this session is filled in from
+  the saved scan and marked "*". A note under the table gives the scan's
+  date. Userfile names and disc names fall back to the scan the same way.
+  What the changer reports always replaces the scan's entry.
+- This is display-only. The table's data isn't used for writes, which
+  still read the disc's current genre and userfiles from the changer
+  first (`_ensure_disc_state`), so a stale scan can't reset them.
+- "Read Userfiles for Known Discs" now also reads the saved scan's
+  slots, so it works without a Disc Map scan first. Slots the Disc Map
+  found empty this session are skipped.
+
+**The Userfiles tab change is CONFIRMED on real hardware too** (same
+day, raw-byte log). The user reported it working as expected. The log
+shows "Read Userfiles for Known Discs" run straight after connecting,
+with no Disc Map scan, reading slots 1-3 from the saved scan
+(`02 03 07 00 00 08 01 00 00 00 00 ed`, then slots 2 and 3). The replies
+were `0x02`, `0x04` and `0x01`, matching the scan.
+
+Tests: `TestUserfilesTabUsesTheSavedScan` (8, one of them checking the
+three logged read frames). A test in `TestRealLibraryTabSession` checks
+that adding #3 and taking it out again send exactly the two logged
+frames.
+
+## v1.12.0 -- Add a disc to a userfile from the Library tab (CONFIRMED in v1.12.1)
+
+A "Userfiles" menu on the Library tab (also opened by right-clicking a
+disc) lists the eight userfiles, with the selected disc's current ones
+ticked. Ticking one adds the disc to it; unticking takes the disc out.
+It asks for confirmation first.
+
+It sends nothing new. The write is the Userfiles & Program tab's
+membership write: the disc name re-sent with the new mask in TextData's
+userfiles byte and the disc's genre kept (`plan_userfile_membership_write`,
+CONFIRMED v1.8.1). The difference is where the old values come from. The
+Library's data is a scan that may be out of date, so the worker first
+re-reads the slot from the changer (the same reads as "Rescan Disc") and
+builds the write from that, never from the scan. Nothing is written when:
+- the slot is empty or can't be read, or its name, genre or userfiles
+  can't be read;
+- the slot now holds a different disc name than the scan saw. The write
+  re-sends the name, so writing the wrong one would rename a disc;
+- the disc has no name. The write needs one to re-send, same as on the
+  Userfiles & Program tab;
+- the disc is already in (or already out of) that userfile.
+In each case the Library row is updated from the fresh read and the
+reason is shown. After a write, the slot is read again, the row and the
+saved scan are updated, and a mismatch is reported.
+
+Like "Rescan Disc", it's only available while the changer scan is shown,
+not a backup file, since it updates the saved scan.
+
+Tests (`test_library_browser.py`, 14 new): `TestUserfileChange` for the
+decision logic, and `TestLibraryUserfiles` against the simulated changer
+(add, remove, declined, disc changed since the scan, no name, already a
+member, a write that doesn't stick, the menu's ticks, backup file shown).
+One test checks that adding #3 to a disc in #1 and #2 sends exactly the
+frame logged in the v1.8.1 real-hardware session (slot 1 -> `0x07`).
+
 ## v1.11.1 -- Library tab CONFIRMED on real hardware
 
 The user tried v1.11.0 on the real CD-425M (2026-09-24, raw-byte log) and

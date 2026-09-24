@@ -59,6 +59,40 @@ def replace_disc(raw_library: dict, record: dict | None, slot: int) -> dict:
     return dict(raw_library, discs=sorted(discs, key=lambda d: d["slot"]))
 
 
+# -- Adding a disc to a userfile (v1.12.0) --------------------------------
+
+def userfile_change(slot: int, scanned_name: str | None, state: dict, number: int,
+                    member: bool) -> tuple[int | None, str]:
+    """Whether to put the disc in `slot` into userfile #`number` (member
+    True) or take it out (False). `state` is what the changer says now (a
+    fresh slot read: raw track count, name, genre code, userfile mask).
+    The write re-sends the disc's name, so it only goes ahead when the slot
+    still holds the disc the scan saw. Returns (new mask, "") to write it,
+    or (None, why not)."""
+    count = state.get("track_count")
+    if count is None:
+        return None, f"Couldn't read slot {slot}, so nothing was written."
+    if not count:
+        return None, f"Slot {slot} is empty now, so nothing was written."
+    name = state.get("name")
+    if name is None:
+        return None, f"Couldn't read slot {slot}'s disc name, so nothing was written."
+    if name != (scanned_name or ""):
+        return None, (
+            f"Slot {slot} now holds {name or '(no name)'!r}, not "
+            f"{scanned_name or '(no name)'!r} as in the scan, so nothing was written. "
+            "The library has been updated; check it's the disc you meant and try again."
+        )
+    mask = state.get("userfiles")
+    if mask is None:
+        return None, f"Couldn't read slot {slot}'s userfiles, so nothing was written."
+    bit = 1 << (number - 1)
+    if bool(mask & bit) == member:
+        return None, (f"Slot {slot} is already in userfile #{number}." if member else
+                      f"Slot {slot} isn't in userfile #{number}.")
+    return (mask | bit) if member else (mask & ~bit), ""
+
+
 # -- Searching and filtering ----------------------------------------------
 
 def _words(query: str) -> list[str]:

@@ -210,7 +210,15 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # last scan is kept in library_cache.json.
 # v1.11.1 -- the Library tab CONFIRMED on real hardware (scan, play a
 # track, rescan a disc). Docs/tests only.
-APP_VERSION = "1.11.1"
+# v1.12.0 -- the Library tab's "Userfiles" menu (and right-click): add a
+# disc to a userfile or take it out, using the confirmed membership
+# write, after a fresh read of the slot.
+# v1.12.1 -- v1.12.0 CONFIRMED on real hardware (add #3 to slot 1 and
+# take it out again). The Userfiles & Program tab's table is filled in
+# from the Library's saved scan (marked "*") for discs the changer hasn't
+# reported this session, and "Read Userfiles for Known Discs" uses the
+# scan's slots too. CONFIRMED on real hardware.
+APP_VERSION = "1.12.1"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -483,19 +491,47 @@ def _disc_label(slot: int, disc_names: dict) -> str:
     return f"{slot} ({name})" if name else str(slot)
 
 
-def userfile_rows(userfiles_by_slot: dict, names_by_index: dict, disc_names: dict) -> list[tuple]:
+def scan_only_slots(userfiles_by_slot: dict, saved: dict | None) -> set[int]:
+    """Slots whose userfiles are known only from the Library's saved scan
+    (v1.12.1), not from the changer this session."""
+    if not saved:
+        return set()
+    return {d["slot"] for d in saved["discs"]
+            if d.get("userfiles") is not None and d["slot"] not in userfiles_by_slot}
+
+
+def userfile_rows(userfiles_by_slot: dict, names_by_index: dict, disc_names: dict,
+                  saved: dict | None = None) -> list[tuple]:
     """Rows for the Userfiles & Program tab's userfile table: one per
     userfile #1..#8 -> (number, name, discs). Membership comes from each
     slot's userfile bitmask (bit n-1 = userfile #n, CONFIRMED v1.6.2).
     Names are keyed by the same BIT, not the userfile number: CONFIRMED on
     real hardware (v1.7.1) -- a userfile-names read returned indexes 1, 2,
-    4, 8, 16, 32, 64, 128, so userfile #3's name is index 4."""
+    4, 8, 16, 32, 64, 128, so userfile #3's name is index 4.
+
+    `saved` (v1.12.1) is the Library's last scan (parsed). It fills in
+    slots, disc names and userfile names the changer hasn't reported this
+    session, so the table isn't empty until every disc is re-read. Slots
+    from it are marked "*", since they may be out of date. What the changer
+    reported always wins."""
+    masks, names, saved_uf_names = {}, {}, {}
+    if saved:
+        for d in saved["discs"]:
+            if d.get("userfiles") is not None:
+                masks[d["slot"]] = d["userfiles"]
+            if d.get("name"):
+                names[d["slot"]] = d["name"]
+        saved_uf_names = {1 << (n - 1): name for n, name in (saved.get("userfile_names") or {}).items()}
+    from_scan = scan_only_slots(userfiles_by_slot, saved)
+    masks.update(userfiles_by_slot)
+    names.update(disc_names)
     rows = []
     for n in range(1, USERFILE_COUNT + 1):
         bit = 1 << (n - 1)
-        slots = sorted(s for s, mask in userfiles_by_slot.items() if mask & bit)
-        discs = ", ".join(_disc_label(s, disc_names) for s in slots) or "-"
-        rows.append((f"#{n}", names_by_index.get(bit) or "-", discs))
+        slots = sorted(s for s, mask in masks.items() if mask & bit)
+        discs = ", ".join(_disc_label(s, names) + ("*" if s in from_scan else "")
+                          for s in slots) or "-"
+        rows.append((f"#{n}", names_by_index.get(bit) or saved_uf_names.get(bit) or "-", discs))
     return rows
 
 
@@ -774,6 +810,9 @@ class App(tk.Tk):
         # that scan, or a backup file opened with "Open Backup...".
         self.library_cache_path = library_cache_path  # None: don't save or load
         self._browser_raw: dict | None = None
+        # The saved scan, parsed (v1.12.1): also fills in the Userfiles &
+        # Program tab's table. Never a backup file opened for browsing.
+        self._browser_scan: dict | None = None
         self._browser_library: dict | None = None
         self._browser_file: str | None = None  # the backup file shown, if not the scan
         self._browser_sort = ("slot", False)
@@ -1205,6 +1244,8 @@ class App(tk.Tk):
             self.uf_tree.heading(col, text=text)
             self.uf_tree.column(col, width=width, anchor="w", stretch=(col == "discs"))
         self.uf_tree.pack(fill="both", expand=True, pady=(4, 0))
+        self.uf_saved_note = ttk.Label(uf_frame, text="", foreground="gray")
+        self.uf_saved_note.pack(anchor="w")
 
         # Per-disc membership editor: load a slot's mask, tick boxes, write.
         member_frame = ttk.Frame(uf_frame)
@@ -1329,7 +1370,8 @@ class App(tk.Tk):
             text="Every disc in the changer. \"Scan Changer\" reads all 200 slots (the same "
                  "walk as the Backup tab's export, so it takes about a minute), and is kept "
                  "for next time. Search matches disc names, genres and track names. "
-                 "Double-click a disc or track to play it.",
+                 "Double-click a disc or track to play it; right-click a disc (or use "
+                 "\"Userfiles\") to add it to a userfile or take it out.",
         ).pack(anchor="w", pady=(0, 4))
 
         toolbar = ttk.Frame(tab)
@@ -1381,6 +1423,14 @@ class App(tk.Tk):
         self.lib_edit_btn.pack(side="left", padx=2)
         self.lib_rescan_btn = ttk.Button(actions, text="Rescan Disc", command=self._browser_rescan_disc)
         self.lib_rescan_btn.pack(side="left", padx=2)
+        # v1.12.0: tick a userfile to add the disc to it, untick to take it
+        # out. Also on a right-click on a disc.
+        self.lib_userfile_btn = ttk.Menubutton(actions, text="Userfiles")
+        self.lib_userfile_menu = tk.Menu(self.lib_userfile_btn, tearoff=False,
+                                         postcommand=self._browser_fill_userfile_menu)
+        self.lib_userfile_btn.configure(menu=self.lib_userfile_menu)
+        self.lib_userfile_btn.pack(side="left", padx=2)
+        self._browser_userfile_vars = [tk.BooleanVar(value=False) for _ in range(USERFILE_COUNT)]
         ttk.Label(
             actions, foreground="gray",
             text="The Disc Data tab only shows the loaded disc, so this loads it (and starts it playing).",
@@ -1403,6 +1453,7 @@ class App(tk.Tk):
         disc_scroll.pack(side="right", fill="y")
         self.lib_disc_tree.bind("<<TreeviewSelect>>", lambda e: self._browser_show_tracks())
         self.lib_disc_tree.bind("<Double-1>", lambda e: self._browser_double_click(e, use_track=False))
+        self.lib_disc_tree.bind("<Button-3>", self._browser_context_menu)
         panes.add(disc_frame, weight=3)
 
         track_frame = ttk.Frame(panes)
@@ -2919,14 +2970,22 @@ class App(tk.Tk):
     def _refresh_userfiles_view(self):
         selected = self.uf_tree.selection()
         self.uf_tree.delete(*self.uf_tree.get_children())
-        for n, row in enumerate(userfile_rows(self._userfiles_cache, self._userfile_name_cache,
-                                              self._disc_name_cache), start=1):
+        saved = self._browser_scan
+        rows = userfile_rows(self._userfiles_cache, self._userfile_name_cache,
+                             self._disc_name_cache, saved)
+        for n, row in enumerate(rows, start=1):
             self.uf_tree.insert("", "end", iid=str(n), values=row)
         if selected and self.uf_tree.exists(selected[0]):
             self.uf_tree.selection_set(selected[0])
+        if scan_only_slots(self._userfiles_cache, saved):
+            when = library_browser.format_when(saved.get("exported_at"))
+            self.uf_saved_note.configure(
+                text=f"* From the Library tab's scan on {when}, not read from the changer yet "
+                     "this session. \"Read Userfiles for Known Discs\" refreshes them.")
+        else:
+            self.uf_saved_note.configure(text="")
         for n, cb in enumerate(self.uf_member_checks, start=1):
-            name = self._userfile_name_cache.get(proto.userfile_param(n))
-            cb.configure(text=f"#{n} {name}" if name else f"#{n}")
+            cb.configure(text=f"#{n} {rows[n - 1][1]}" if rows[n - 1][1] != "-" else f"#{n}")
 
     def _refresh_program_view(self):
         selected = self.prog_tree.selection()
@@ -3188,10 +3247,14 @@ class App(tk.Tk):
         )
 
     def _known_disc_slots(self) -> list[int]:
-        """Slots the app knows hold a disc this session: occupied on the
-        Disc Map, or with a disc name read back."""
+        """Slots the app knows hold a disc: occupied on the Disc Map, with
+        a disc name read back, or (v1.12.1) in the Library's saved scan,
+        unless the Disc Map found them empty this session."""
         known = {s for s, occupied in self._disc_occupancy.items() if occupied}
         known |= set(self._disc_name_cache)
+        if self._browser_scan:
+            known |= {d["slot"] for d in self._browser_scan["discs"]
+                      if self._disc_occupancy.get(d["slot"]) is not False}
         return sorted(known)
 
     def _read_userfiles_for_known_discs(self):
@@ -3294,7 +3357,7 @@ class App(tk.Tk):
         self._library_stop.clear()
         self._library_label = label or self.backup_progress_label
         for btn in (self.backup_export_btn, self.backup_restore_btn, self.lib_scan_btn,
-                    self.lib_rescan_btn):
+                    self.lib_rescan_btn, self.lib_userfile_btn):
             btn.configure(state="disabled")
         self.backup_stop_btn.configure(state="normal")
         self.lib_stop_btn.configure(state="normal")
@@ -3567,13 +3630,16 @@ class App(tk.Tk):
             self._log(f"Library: couldn't read the saved scan {path}: {exc}")
             return
         self._browser_raw = json.loads(text)
+        self._browser_scan = parsed
         self._browser_file = None
         self._show_browser_library(parsed)
+        self._refresh_userfiles_view()
 
     def _set_browser_scan(self, raw: dict):
         """UI thread: show a fresh changer scan (or export) and save it for
         next time."""
         self._browser_raw = raw
+        self._browser_scan = library_browser.load_library_text(library_backup.library_to_json(raw))
         self._browser_file = None
         if self.library_cache_path:
             try:
@@ -3581,12 +3647,12 @@ class App(tk.Tk):
             except OSError as exc:
                 self._log(f"Library: couldn't save the scan to {self.library_cache_path}: {exc}")
         self._show_last_scan()
+        self._refresh_userfiles_view()
 
     def _show_last_scan(self):
-        if self._browser_raw is not None:
+        if self._browser_scan is not None:
             self._browser_file = None
-            self._show_browser_library(
-                library_browser.load_library_text(library_backup.library_to_json(self._browser_raw)))
+            self._show_browser_library(self._browser_scan)
 
     def _open_browser_backup(self):
         path = filedialog.askopenfilename(
@@ -3693,10 +3759,12 @@ class App(tk.Tk):
         has_disc = self._browser_selected_disc() is not None
         for btn in (self.lib_play_btn, self.lib_edit_btn):
             btn.configure(state="normal" if has_disc else "disabled")
-        # Rescan updates the saved scan, so not while a backup file is shown.
+        # Rescan and Userfiles update the saved scan, so not while a backup
+        # file is shown.
         can_rescan = (has_disc and self._browser_file is None and self._browser_raw is not None
                       and not self._library_running)
-        self.lib_rescan_btn.configure(state="normal" if can_rescan else "disabled")
+        for btn in (self.lib_rescan_btn, self.lib_userfile_btn):
+            btn.configure(state="normal" if can_rescan else "disabled")
         self.lib_last_scan_btn.configure(
             state="normal" if self._browser_file and self._browser_raw is not None else "disabled")
 
@@ -3775,14 +3843,110 @@ class App(tk.Tk):
         if state["track_count"] is None:
             self._library_finish(f"Rescan: couldn't read slot {slot}; the library wasn't changed.")
             return
+        self._browser_update_slot(slot, state)
+        self._library_finish(f"Rescan: slot {slot} updated." if state["track_count"] else
+                             f"Rescan: slot {slot} is empty now; removed from the library.")
+
+    def _browser_update_slot(self, slot: int, state: dict):
+        """Background thread: put a fresh read of one slot into the saved
+        scan (removing the disc if the slot is empty now). An unreadable
+        slot leaves the scan alone."""
+        if state["track_count"] is None:
+            return
         record = library_backup.disc_record(slot, **state) if state["track_count"] else None
 
         def done():
             if self._browser_raw is not None:
                 self._set_browser_scan(library_browser.replace_disc(self._browser_raw, record, slot))
         self.ui_queue.put(done)
-        self._library_finish(f"Rescan: slot {slot} updated." if record else
-                             f"Rescan: slot {slot} is empty now; removed from the library.")
+
+    def _browser_fill_userfile_menu(self):
+        """Tick the userfiles the selected disc is in, as of the scan."""
+        menu = self.lib_userfile_menu
+        menu.delete(0, "end")
+        disc = self._browser_selected_disc()
+        if disc is None:
+            return
+        mask = disc.get("userfiles") or 0
+        names = self._browser_library["userfile_names"]
+        for n, var in enumerate(self._browser_userfile_vars, start=1):
+            var.set(bool(mask & (1 << (n - 1))))
+            menu.add_checkbutton(label=library_browser.userfile_label(n, names), variable=var,
+                                 command=lambda n=n, v=var: self._browser_set_userfile(n, v.get()))
+
+    def _browser_context_menu(self, event):
+        row = self.lib_disc_tree.identify_row(event.y)
+        if not row:
+            return
+        self.lib_disc_tree.selection_set(row)
+        self._browser_show_tracks()
+        if str(self.lib_userfile_btn.cget("state")) == "disabled":
+            return
+        self._browser_fill_userfile_menu()
+        try:
+            self.lib_userfile_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.lib_userfile_menu.grab_release()
+
+    def _browser_set_userfile(self, number: int, member: bool):
+        """Add the selected disc to userfile #`number` (member True), or
+        take it out. The same write as the Userfiles & Program tab (the
+        disc name re-sent with the new mask, CONFIRMED v1.8.1), but the
+        slot is read fresh first, since the scan may be out of date."""
+        disc = self._browser_selected_disc()
+        if disc is None or self._browser_raw is None or self._browser_file:
+            return
+        link = self._library_can_start()
+        if link is None:
+            return
+        slot = disc["slot"]
+        scanned = next((d.get("name") for d in self._browser_raw["discs"] if d["slot"] == slot), None)
+        userfile = library_browser.userfile_label(number, self._browser_library["userfile_names"])
+        which = f"slot {slot} ({scanned})" if scanned else f"slot {slot}"
+        question = (f"Add {which} to userfile {userfile}?" if member else
+                    f"Take {which} out of userfile {userfile}?")
+        if not messagebox.askyesno(
+            "Userfiles",
+            question + "\n\nThis re-sends the disc's name with its new userfiles attached, the "
+            "same write as the Userfiles & Program tab. The disc's name, genre and userfiles "
+            "are read from the changer first, and nothing is written if the slot doesn't hold "
+            "the disc from the scan.",
+        ):
+            return
+        self._library_begin(f"Userfiles: reading slot {slot}...", self.lib_progress_label)
+        threading.Thread(target=self._library_userfile_worker,
+                         args=(link, slot, scanned, number, member), daemon=True).start()
+
+    def _library_userfile_worker(self, link: PCLinkConnection, slot: int, scanned_name: str | None,
+                                 number: int, member: bool):
+        state = self._read_slot_state_sync(link, slot)
+        mask, why_not = library_browser.userfile_change(slot, scanned_name, state, number, member)
+        if mask is not None:
+            items, error = plan_userfile_membership_write(state["name"], state["genre"])
+            why_not = error or ""
+        if why_not:
+            self._browser_update_slot(slot, state)
+            self._library_finish(f"Userfiles: slot {slot} not changed.", why_not)
+            return
+
+        old = state["userfiles"]
+        self._log(f"Library: writing slot {slot} userfiles=0x{mask:02X} (was 0x{old:02X})...")
+        if not self._send_text_write(link, slot, items[0], mask, "Library"):
+            self._library_finish(f"Userfiles: the write to slot {slot} failed.",
+                                 f"The write to slot {slot} failed; see the log.")
+            return
+        after = self._read_slot_state_sync(link, slot)
+        self._browser_update_slot(slot, after)
+        done = (f"Userfiles: slot {slot} added to #{number}." if member else
+                f"Userfiles: slot {slot} taken out of #{number}.")
+        if after["userfiles"] == mask:
+            self._library_finish(done)
+            return
+        seen = "nothing" if after["userfiles"] is None else f"0x{after['userfiles']:02X}"
+        self._library_finish(
+            f"Userfiles: slot {slot} written, but the re-read didn't show it.",
+            f"The write to slot {slot} went through, but reading it back gave userfiles "
+            f"{seen} instead of 0x{mask:02X}. See the log.")
 
     def _reset_disc_map(self):
         """Changer-sourced state, so cleared on disconnect like the other

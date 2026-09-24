@@ -17,6 +17,11 @@ What's being tested:
     changer, the export refreshing it, the cache loading on the next
     launch, opening a backup file, the filters and search in the table,
     and Play / Load in Disc Data Tab sending ChangeDisc (TestLibraryTab).
+  - Adding a disc to a userfile or taking it out (v1.12.0, CONFIRMED in
+    v1.12.1): the fresh read first, the write, and every reason not to
+    write (TestUserfileChange, TestLibraryUserfiles).
+  - The Userfiles & Program tab filling in from the saved scan (v1.12.1,
+    CONFIRMED on real hardware; TestUserfilesTabUsesTheSavedScan).
 """
 
 from __future__ import annotations
@@ -426,10 +431,252 @@ class TestLibraryTab(_TabCase):
         self.assertIn("couldn't read slot 3", self.app.lib_progress_label.cget("text"))
 
 
+class TestUserfileChange(unittest.TestCase):
+    STATE = {"track_count": 4, "name": "Band / Record", "tracks": {}, "genre": ROCK,
+             "userfiles": 0x05}
+
+    def change(self, number=2, member=True, scanned="Band / Record", **state):
+        return lbr.userfile_change(3, scanned, dict(self.STATE, **state), number, member)
+
+    def test_add_and_remove(self):
+        self.assertEqual(self.change(2, True), (0x07, ""))
+        self.assertEqual(self.change(1, False), (0x04, ""))
+        self.assertEqual(self.change(8, True, userfiles=0), (0x80, ""))
+
+    def test_nothing_to_do(self):
+        self.assertEqual(self.change(1, True), (None, "Slot 3 is already in userfile #1."))
+        self.assertEqual(self.change(2, False), (None, "Slot 3 isn't in userfile #2."))
+
+    def test_a_different_disc_is_not_written(self):
+        mask, why = self.change(name="Someone Else")
+        self.assertIsNone(mask)
+        self.assertIn("now holds 'Someone Else', not 'Band / Record'", why)
+
+    def test_unreadable_or_empty_slot(self):
+        for state, text in (({"track_count": None}, "Couldn't read slot 3"),
+                            ({"track_count": 0}, "Slot 3 is empty now"),
+                            ({"name": None}, "disc name"),
+                            ({"userfiles": None}, "userfiles")):
+            mask, why = self.change(**state)
+            self.assertIsNone(mask)
+            self.assertIn(text, why)
+
+
+class _RunNow:
+    """Stands in for threading.Thread: runs the worker at once."""
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self.target, self.args, self.kwargs = target, args, kwargs or {}
+
+    def start(self):
+        self.target(*self.args, **self.kwargs)
+
+
+class TestLibraryUserfiles(_TabCase):
+    def setUp(self):
+        super().setUp()
+        self.answers = []
+        self._askyesno = app_mod.messagebox.askyesno
+        self._thread = app_mod.threading.Thread
+        app_mod.messagebox.askyesno = lambda title, msg, **kw: (self.answers.append(msg), True)[1]
+        app_mod.threading.Thread = _RunNow
+        self.discs = tlb._library_discs()
+        self.sim = tlb._SimChanger(self.app, self.discs)
+        self.scan(self.sim)
+
+    def tearDown(self):
+        app_mod.messagebox.askyesno = self._askyesno
+        app_mod.threading.Thread = self._thread
+        super().tearDown()
+
+    def set_userfile(self, slot, number, member):
+        self.select(slot)
+        self.app._browser_set_userfile(number, member)
+        self.drain()
+
+    def test_add_to_a_userfile(self):
+        self.set_userfile(3, 2, True)
+        (write,) = self.sim.writes
+        self.assertEqual((write["slot"], write["info_type"], write["text"], write["genre"],
+                          write["userfiles"]),
+                         (3, proto.InfoType.DISC_NAMES, "Band / Record", ROCK, 0x07))
+        self.assertEqual(self.rows()[0][3], "#1, #2, #3")
+        self.assertEqual(self.app.lib_disc_tree.selection(), ("3",))
+        self.assertEqual(self.app.lib_progress_label.cget("text"), "Userfiles: slot 3 added to #2.")
+        self.assertEqual(self.infos, [])
+        self.assertIn("Add slot 3 (Band / Record) to userfile #2", self.answers[0])
+        with open(self.cache, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["discs"][0]["userfiles"], [1, 2, 3])
+        self.assertFalse(self.app._library_running)
+
+    def test_take_out_of_a_userfile(self):
+        self.set_userfile(200, 8, False)
+        self.assertEqual(self.sim.writes[0]["userfiles"], 0x00)
+        self.assertEqual(self.discs[200]["genre"], tlb.FOLK)
+        self.assertEqual(self.rows()[2][3], "")
+
+    def test_declined_writes_nothing(self):
+        app_mod.messagebox.askyesno = lambda title, msg, **kw: False
+        self.set_userfile(3, 2, True)
+        self.assertEqual(self.sim.writes, [])
+        self.assertFalse(self.app._library_running)
+
+    def test_disc_changed_since_the_scan_is_not_written(self):
+        self.discs[3]["name"] = "Someone Else"
+        self.set_userfile(3, 2, True)
+        self.assertEqual(self.sim.writes, [])
+        self.assertEqual(self.rows()[0][1], "Someone Else")  # the library caught up
+        self.assertIn("now holds 'Someone Else'", self.infos[0])
+
+    def test_disc_with_no_name_is_not_written(self):
+        self.set_userfile(150, 1, True)
+        self.assertEqual(self.sim.writes, [])
+        self.assertIn("no name stored", self.infos[0])
+
+    def test_already_in_it_per_the_changer(self):
+        self.discs[3]["userfiles"] = 0x07  # added from the remote since the scan
+        self.set_userfile(3, 2, True)
+        self.assertEqual(self.sim.writes, [])
+        self.assertEqual(self.infos, ["Slot 3 is already in userfile #2."])
+        self.assertEqual(self.rows()[0][3], "#1, #2, #3")
+
+    def test_write_that_doesnt_stick_is_reported(self):
+        self.sim.send_write = lambda *a, **kw: None  # ACK'd but not stored
+        self.set_userfile(3, 2, True)
+        self.assertIn("instead of 0x07", self.infos[0])
+
+    def test_menu_ticks_the_discs_userfiles(self):
+        self.select(3)
+        self.app._browser_fill_userfile_menu()
+        self.assertEqual(self.app.lib_userfile_menu.index("end"), 7)
+        self.assertEqual([v.get() for v in self.app._browser_userfile_vars],
+                         [True, False, True, False, False, False, False, False])
+
+    def test_not_while_a_backup_file_is_shown(self):
+        backup = os.path.join(self.tmp.name, "old.json")
+        with open(backup, "w", encoding="utf-8") as f:
+            f.write(lb.library_to_json(REAL_RAW))
+        app_mod.filedialog.askopenfilename = lambda **kw: backup
+        self.app._open_browser_backup()
+        self.select(1)
+        self.assertEqual(str(self.app.lib_userfile_btn.cget("state")), "disabled")
+        self.app._browser_set_userfile(3, True)
+        self.assertEqual(self.sim.writes, [])
+
+    def test_sends_the_confirmed_membership_frame(self):
+        # v1.8.1 on the real CD-425M: slot 1 set to userfiles 0x07 by this
+        # exact frame, ACK'd and read back. Adding #3 to a disc in #1 and
+        # #2 is the same write.
+        self.discs[1] = {"count": 12, "name": "The Tragically Hip / Trou", "titles": {},
+                         "genre": 0x03, "userfiles": 0x03}
+        self.scan(self.sim)
+        sent = []
+        write = self.sim.send_write
+
+        def record(command, data, follow_up_command, follow_up_data, timeout=8.0):
+            sent.append((data, follow_up_command, follow_up_data))
+            write(command, data, follow_up_command, follow_up_data)
+        self.sim.send_write = record
+        self.set_userfile(1, 3, True)
+        ((req, cmd, fu),) = sent
+        self.assertEqual(proto.encode_frame(proto.CMD_DATA_ACCESS, req).hex(" "),
+                         "02 03 07 00 80 01 01 00 00 00 00 74")
+        self.assertEqual(proto.encode_frame(cmd, fu).hex(" "),
+                         "02 fe 20 00 01 00 00 07 00 03 00 54 68 65 20 54 72 61 67 69 63 61 6c 6c"
+                         " 79 20 48 69 70 20 2f 20 54 72 6f 75 30")
+
+
+class TestUserfilesTabUsesTheSavedScan(_TabCase):
+    """v1.12.1: the Userfiles & Program tab showed nothing until every disc
+    was re-read from the changer, though the Library's saved scan had it all
+    (user report, 2026-09-24). The scan now fills in the gaps, marked "*"."""
+
+    def load(self):
+        lbr.save_cache(self.cache, REAL_RAW)
+        self.app._load_library_cache()
+
+    def uf_rows(self):
+        return [self.app.uf_tree.item(str(n), "values") for n in range(1, 9)]
+
+    def test_rows_from_the_scan_are_marked(self):
+        rows = app_mod.userfile_rows({}, {}, {}, _real())
+        self.assertEqual(rows[0], ("#1", "New Name", "3 (Rusty / Fluke)*"))
+        self.assertEqual(rows[1], ("#2", "BALLS FART", "1 (The Tragically Hip / Trou)*"))
+        self.assertEqual(rows[2], ("#3", "My List", "2 (Limblifter-Bellaclava)*"))
+        self.assertEqual(rows[3], ("#4", "-", "-"))
+
+    def test_what_the_changer_reported_wins(self):
+        # Slot 1 read this session as 0x06 (#2 and #3), the logged re-read.
+        rows = app_mod.userfile_rows({1: 0x06}, {0x04: "Renamed"}, {}, _real())
+        self.assertEqual(rows[1][2], "1 (The Tragically Hip / Trou)")
+        self.assertEqual(rows[2], ("#3", "Renamed",
+                                   "1 (The Tragically Hip / Trou), 2 (Limblifter-Bellaclava)*"))
+        self.assertEqual(app_mod.scan_only_slots({1: 0x06}, _real()), {2, 3})
+
+    def test_no_scan_is_unchanged(self):
+        self.assertEqual(app_mod.userfile_rows({3: 0x01}, {}, {3: "X"})[0], ("#1", "-", "3 (X)"))
+
+    def test_tab_fills_in_at_launch_and_after_disconnect(self):
+        self.load()
+        self.assertEqual(self.uf_rows()[1][2], "1 (The Tragically Hip / Trou)*")
+        self.assertIn("From the Library tab's scan on 2026-09-24 12:30",
+                      self.app.uf_saved_note.cget("text"))
+        self.assertEqual(self.app.uf_member_checks[2].cget("text"), "#3 My List")
+        self.app._disconnect()
+        self.assertEqual(self.uf_rows()[1][2], "1 (The Tragically Hip / Trou)*")
+
+    def test_a_changer_read_replaces_the_scan_entry(self):
+        self.load()
+        for slot, mask in ((1, 0x02), (2, 0x04), (3, 0x01)):
+            self.app._note_userfiles(slot, mask)
+        self.drain()
+        self.assertNotIn("*", "".join(r[2] for r in self.uf_rows()))
+        self.assertEqual(self.app.uf_saved_note.cget("text"), "")
+
+    def test_logged_read_of_the_scans_discs_without_a_disc_map(self):
+        # v1.12.1 on the real CD-425M (2026-09-24): straight after
+        # connecting, with no Disc Map scan, "Read Userfiles for Known
+        # Discs" sent these three frames, and every "*" was replaced.
+        self.load()
+        sim = tlb._SimChanger(self.app, {
+            1: {"count": 12, "name": "The Tragically Hip / Trou", "titles": {}, "genre": ALT,
+                "userfiles": 0x02},
+            2: {"count": 13, "name": "Limblifter-Bellaclava", "titles": {}, "genre": ROCK,
+                "userfiles": 0x04},
+            3: {"count": 10, "name": "Rusty / Fluke", "titles": {}, "genre": ROCK,
+                "userfiles": 0x01}})
+        sent = []
+        simulated = sim.send
+
+        def record(command, data, timeout=5.0):
+            sent.append(proto.encode_frame(command, data).hex(" "))
+            simulated(command, data, timeout)
+        sim.send = record
+        self.app.link = sim
+        thread = app_mod.threading.Thread
+        app_mod.threading.Thread = _RunNow
+        try:
+            self.app._read_userfiles_for_known_discs()
+        finally:
+            app_mod.threading.Thread = thread
+        self.drain()
+        self.assertEqual(sent, ["02 03 07 00 00 08 01 00 00 00 00 ed",
+                                "02 03 07 00 00 08 02 00 00 00 00 ec",
+                                "02 03 07 00 00 08 03 00 00 00 00 eb"])
+        self.assertNotIn("*", "".join(r[2] for r in self.uf_rows()))
+        self.assertEqual(self.app.uf_saved_note.cget("text"), "")
+
+    def test_known_discs_include_the_scan(self):
+        self.load()
+        self.assertEqual(self.app._known_disc_slots(), [1, 2, 3])
+        self.app._disc_occupancy[2] = False  # the Disc Map found it empty
+        self.assertEqual(self.app._known_disc_slots(), [1, 3])
+
+
 class TestRealLibraryTabSession(_TabCase):
-    """Frames from the first real run of the Library tab (v1.11.0 on the
-    CD-425M, 2026-09-24): an empty slot reporting format 0x90, and the
-    ChangeDisc a track double-click sent."""
+    """Frames from real runs of the Library tab on the CD-425M
+    (2026-09-24): an empty slot reporting format 0x90 and the ChangeDisc a
+    track double-click sent (v1.11.0), and the userfile writes (v1.12.0)."""
 
     EMPTY_SLOT_100 = "02 04 05 00 64 00 00 00 90 03"  # count 0, format 0x90
     CHANGE_DISC_1_6 = "02 0b 04 00 01 00 06 01 e9"
@@ -456,6 +703,38 @@ class TestRealLibraryTabSession(_TabCase):
         frame = bytes.fromhex(self.CHANGE_DISC_1_6)
         self.assertEqual(self.sent, [(frame[1], tlb._data(self.CHANGE_DISC_1_6))])
 
+
+    def test_logged_add_and_remove_of_userfile_3(self):
+        # v1.12.0 on the real CD-425M (2026-09-24): slot 1 was in #2 (0x02).
+        # Adding #3 wrote 0x06 and removing it wrote 0x02 again, genre
+        # Alternative Rock (0x03) kept; each re-read matched.
+        discs = {1: {"count": 12, "name": "The Tragically Hip / Trou", "titles": {},
+                     "genre": ALT, "userfiles": 0x02}}
+        sim = tlb._SimChanger(self.app, discs)
+        self.scan(sim)
+        sent = []
+        write = sim.send_write
+
+        def record(command, data, follow_up_command, follow_up_data, timeout=8.0):
+            sent.append(proto.encode_frame(follow_up_command, follow_up_data).hex(" "))
+            write(command, data, follow_up_command, follow_up_data)
+        sim.send_write = record
+        askyesno, thread = app_mod.messagebox.askyesno, app_mod.threading.Thread
+        app_mod.messagebox.askyesno = lambda *a, **kw: True
+        app_mod.threading.Thread = _RunNow
+        try:
+            self.select(1)
+            self.app._browser_set_userfile(3, True)
+            self.drain()
+            self.app._browser_set_userfile(3, False)
+            self.drain()
+        finally:
+            app_mod.messagebox.askyesno, app_mod.threading.Thread = askyesno, thread
+        name = "54 68 65 20 54 72 61 67 69 63 61 6c 6c 79 20 48 69 70 20 2f 20 54 72 6f 75"
+        self.assertEqual(sent, [f"02 fe 20 00 01 00 00 06 00 03 00 {name} 31",
+                                f"02 fe 20 00 01 00 00 02 00 03 00 {name} 35"])
+        self.assertEqual(discs[1]["userfiles"], 0x02)
+        self.assertEqual(self.app.lib_progress_label.cget("text"), "Userfiles: slot 1 taken out of #3.")
 
 if __name__ == "__main__":
     unittest.main()
