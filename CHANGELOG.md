@@ -1,5 +1,88 @@
 # Changelog
 
+## v1.11.1 -- Library tab CONFIRMED on real hardware
+
+The user tried v1.11.0 on the real CD-425M (2026-09-24, raw-byte log) and
+reported everything working as expected. What the log shows:
+- **Scan Changer**: all 200 slots in about 68 seconds. Slots 1-3 came back
+  with their real track counts (12, 13, 10; all had been played since
+  power-on), names, genre and userfiles. Slots 4-200 were empty. Then the
+  userfile names were read. "Scan done: 3 disc(s)."
+- **Play from a track**: `ChangeDisc(slot=1, track=6)`
+  (`02 0b 04 00 01 00 06 01 e9`); the changer's `InfoEvent` reported slot
+  1, track 6, so the selected track was used.
+- **Rescan Disc** on slot 2: one slot's reads, then "Rescan: slot 2
+  updated."
+- **ChangeDisc(slot=2, track=1)**, then the usual slot-change auto-fetch
+  and the TOC read once the disc finished changing. That's what "Load in
+  Disc Data Tab" (or Play on a disc) sends; the log can't tell which
+  button was used.
+- The last scan showing again on the next launch, and opening a backup
+  file, don't touch the changer, so they aren't in the log. They're
+  covered by the user's report.
+
+**New observation, not understood:** empty slots 100-102 reported
+DiscInfo `format` `0x90` (`02 04 05 00 64 00 00 00 90 03`) instead of
+`0x00`, with a track count of 0 like every other empty slot. It makes no
+difference to the app, which only counts a slot as occupied when its
+count is above 0. Its meaning is unknown.
+
+Tests: `TestRealLibraryTabSession` (the logged `0x90` empty-slot frame
+stays out of the library; a track double-click sends the logged
+`ChangeDisc` frame). No code change besides the version bump.
+
+## v1.11.0 -- Library tab: browse, search and play the whole library (CONFIRMED in v1.11.1)
+
+A new "Library" tab (next to Control) lists every disc in the changer:
+slot, disc name, genre, userfiles and track count, with the selected
+disc's tracks below. The v1.10.0 entry called the Backup export "a first
+step toward the library browser"; this is that browser. It reuses the
+export's slot walk, and adds no new serial commands.
+
+Choices made with the user:
+- **Where the data comes from.** "Scan Changer" reads all 200 slots, the
+  same walk as the export (`_read_all_slots_sync`, split out of
+  `_library_export_worker`), plus the userfile names but not the
+  program. A Backup tab export refreshes the Library too, since it just
+  read the same data. "Open Backup..." shows a `.json` backup, so the
+  library can be browsed with no changer connected.
+- **The last scan is kept** in `library_cache.json` next to the app
+  (gitignored) and shown on the next launch, labeled with when it was
+  made, since discs may have moved or been renamed since. It's an
+  ordinary backup file, written via a temp file so a crash can't leave
+  half of one. Opening a backup never overwrites it, and "Show Last
+  Scan" goes back to it.
+- **Search** matches every word anywhere in a disc: its name, its genre
+  or any track name ("hip gift" finds the Hip through "Gift Shop").
+  Matching tracks are highlighted. Genre and userfile dropdowns filter,
+  and clicking a column heading sorts (discs missing that value go
+  last).
+- **Actions.** Play, or a double-click, sends `ChangeDisc` (the
+  already-confirmed `begin=True` form) for the selected disc and track.
+  "Load in Disc Data Tab" does the same and then switches tabs. The
+  Disc Data tab only shows the loaded disc, and the TOC gnudb needs can
+  only be read for the loaded disc (CONFIRMED), so the disc has to be
+  loaded, which starts it playing. `begin=False` (load without playing)
+  has never been tried, so it isn't used. "Rescan Disc" re-reads one slot
+  and updates the saved scan.
+
+Known limits:
+- A disc not played since power-on shows its track count as "?" (or
+  "2?" when two track names are known), because DiscInfo reports 99
+  (v1.10.1). Its track pane lists only the named tracks.
+- The tab doesn't follow writes made on other tabs. After renaming
+  something on the Disc Data or Userfiles tab, use "Rescan Disc".
+
+Also: tests that build the app now pass `library_cache_path` (a temp
+file, or `None`), so running them can't overwrite the real cache.
+
+Tests: `test_library_browser.py` (37): search, filters, sorting and rows
+on the user's real discs (from the v1.10.x backups and logs), the cache
+file, and the tab itself against `test_library_backup`'s simulated
+changer (scan, export refresh, reload on the next launch, open a backup,
+Play and Load in Disc Data Tab sending the right `ChangeDisc`, Rescan
+Disc).
+
 ## v1.10.2 -- Backup export and restore CONFIRMED on real hardware
 
 The user tested v1.10.1 on the real CD-425M (2026-09-24, raw-byte log).

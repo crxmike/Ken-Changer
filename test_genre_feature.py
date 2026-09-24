@@ -284,7 +284,7 @@ class TestGenreWriteWorkerAttachesGenre(unittest.TestCase):
     computes the right tuples."""
 
     def setUp(self):
-        self.app = app_mod.App()
+        self.app = app_mod.App(library_cache_path=None)
         self.link = _FakeLink()
         # Re-reads after a successful write happen via self._send_bg (its
         # own background thread) -- irrelevant to what this test checks

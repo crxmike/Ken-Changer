@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.10.2 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.11.1 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
 and programs + gnudb.org lookup with cover art, all confirmed working
 against real CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
@@ -18,6 +18,8 @@ if you're extending this. v1.8.0 adds writing userfiles and programs
 mode selector (`ChangeMode`), **partly confirmed on real hardware**.
 v1.10.0 adds a Backup tab (export the library to a file, and restore
 it), **confirmed on real hardware in v1.10.2** (see "Honest gaps" #19).
+v1.11.0 adds a Library tab (browse, search and play every disc),
+**confirmed on real hardware in v1.11.1** (see "Honest gaps" #20).
 
 A small desktop app for controlling a Kenwood CD-425M CD changer (also
 compatible with the CD-4700M / CD-4260M, which use the same command set)
@@ -160,6 +162,19 @@ python pclink_app.py
   since that's probably a different disc. Restoring the program is a
   separate yes/no, because writing a program starts it playing. The file
   format is described at the top of `library_backup.py`.
+- **Library tab** (v1.11.0, **confirmed on real hardware in v1.11.1**;
+  see "Honest gaps" #20): every disc in one table (slot, name, genre,
+  userfiles, track count), with the selected disc's tracks below.
+  "Scan Changer" reads all 200 slots, the same walk as the Backup export
+  (which refreshes this tab too). The last scan is saved to
+  `library_cache.json` next to the app and shown on the next launch,
+  labeled with its date. "Open Backup..." browses a `.json` backup
+  offline. Search matches words in disc names, genres and track names,
+  and highlights matching tracks. The Genre and Userfile dropdowns filter,
+  and a click on a column heading sorts. Double-click (or Play) plays a
+  disc or track via `ChangeDisc`. "Load in Disc Data Tab" loads the disc
+  and switches to that tab, which only shows the loaded disc. "Rescan
+  Disc" re-reads one slot.
 - **Log console** with a "show raw bytes" toggle, so you can see the actual
   ENQ/ACK/STX/EOT byte exchange -- useful both for troubleshooting your
   specific unit and for extending the app later.
@@ -322,6 +337,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
 - `library_backup.py` -- the Backup tab's file format and restore
   planning (no serial or Tkinter dependency; tested in
   `test_library_backup.py`).
+- `library_browser.py` -- the Library tab's search, filters, sorting and
+  scan cache (no serial or Tkinter dependency; tested in
+  `test_library_browser.py`).
 
 ## Protocol summary (for reference)
 
@@ -779,6 +797,25 @@ exactly what's happening):
    - **Tracks 21+** (the manual's 20-title limit, see "Owner's manual
      notes") are backed up if the changer returns them, and restore
      writes them. It's still unknown what the changer does with those.
+20. **Library tab -- CONFIRMED on real hardware (v1.11.1).** It sends
+   nothing new: the scan is the export's slot walk (#19) plus the
+   userfile-name read (#16), and Play is `ChangeDisc`. In the first real
+   run, the scan found all 3 discs with their names, genres, userfiles
+   and track counts (about 68 seconds for 200 slots). Playing track 6
+   of slot 1 started exactly that track, Rescan Disc re-read slot 2, and
+   the user reported the rest (Disc Data tab, the scan reloading on the
+   next launch) working as expected. See `CHANGELOG.md` v1.11.1.
+   - **DiscInfo `format` `0x90` on some empty slots** (100-102 in that
+     run; every other empty slot says `0x00`). Meaning unknown; the
+     track count is still 0, so they're correctly shown as empty.
+   Known limits:
+   - **Track counts after power-on**: a disc not played since power-on
+     shows "?" (or "2?" with two named tracks), and only its named tracks
+     are listed (DiscInfo says 99, see #19).
+   - **It doesn't follow edits made on other tabs.** Use "Rescan Disc"
+     after renaming or re-tagging a disc.
+   - **The saved scan can go stale** (discs moved, or renamed from the
+     remote). The tab shows the scan's date; "Scan Changer" refreshes it.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

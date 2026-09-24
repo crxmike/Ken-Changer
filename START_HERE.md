@@ -90,7 +90,20 @@ hand-edited track names were restored and verified, and a second restore
 wrote nothing. See `CHANGELOG.md`'s v1.10.0-v1.10.2 entries and README
 "Honest gaps" #19.
 
+**v1.11.0** -- a Library tab: every disc in one searchable, sortable
+table, with its tracks below. It comes from a changer scan (the Backup
+export's slot walk), and the last scan is kept in `library_cache.json`.
+It can also show a `.json` backup file offline. Play/double-click sends
+`ChangeDisc`, and "Load in Disc Data Tab" loads the disc and switches
+tabs. **v1.11.1: CONFIRMED on real hardware.** See README "Honest gaps"
+#20 and `CHANGELOG.md` v1.11.1.
+
 ## In progress / next up
+
+- **Library tab: confirmed (v1.11.1).** Possible follow-ups: have
+  it follow writes made on other tabs (it needs "Rescan Disc" today),
+  and batch gnudb tagging, which the v1.10.0 entry mentions alongside
+  it.
 
 - **Backup tab: confirmed (v1.10.2).** Untried corners: restoring
   userfile names, restoring the program, a genre- or userfiles-only
@@ -133,6 +146,11 @@ wrote nothing. See `CHANGELOG.md`'s v1.10.0-v1.10.2 entries and README
   needs Pillow).
 - `library_backup.py` -- Backup tab file format and restore planning
   (v1.10.0).
+- `library_browser.py` -- Library tab search, filters, sorting and the
+  scan cache (v1.11.0).
+- `test_library_browser.py` -- tests for the Library tab, against the
+  Backup tests' simulated changer plus the user's real disc data and
+  frames from the first real run; confirmed on real hardware (v1.11.1).
 - `test_library_backup.py` -- tests for the Backup tab, against a
   simulated changer plus frames from real logs; export and restore
   confirmed on real hardware (v1.10.2).

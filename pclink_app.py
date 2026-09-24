@@ -17,6 +17,8 @@ against real hardware yet.
 from __future__ import annotations
 
 import datetime
+import json
+import os
 import queue
 import threading
 import time
@@ -37,6 +39,7 @@ from pclink_protocol import Frame
 import gnudb_client
 import album_art
 import library_backup
+import library_browser
 
 
 MODE_CHANGE_TIMEOUT_MS = 5000  # how long to wait for an InfoEvent after Set Mode
@@ -201,7 +204,17 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # hand-edited track names were written back and verified, unplayed (99)
 # slots matched instead of being skipped, and a second restore wrote
 # nothing. Docs/tests only.
-APP_VERSION = "1.10.2"
+# v1.11.0 -- a Library tab: browse every disc (from a changer scan, the
+# Backup export, or a backup file), search disc/track names, filter by
+# genre/userfile, and play a disc or open it on the Disc Data tab. The
+# last scan is kept in library_cache.json.
+# v1.11.1 -- the Library tab CONFIRMED on real hardware (scan, play a
+# track, rescan a disc). Docs/tests only.
+APP_VERSION = "1.11.1"
+
+# The Library tab's last changer scan (v1.11.0), next to the app.
+LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  library_browser.CACHE_FILENAME)
 
 
 def gather_disc_data_write_items(disc_data_rows: list) -> list:
@@ -668,7 +681,11 @@ class App(tk.Tk):
     DISC_MAP_COLOR_EMPTY = "#9e9e9e"     # queried, DiscInfo says no disc
     DISC_MAP_COLOR_OCCUPIED = "#4caf50"  # queried, DiscInfo says a disc is there
 
-    def __init__(self):
+    # -- Library tab (v1.11.0): disc table columns, keyed by sort key ------
+    LIBRARY_COLUMN_TITLES = {"slot": "Slot", "name": "Disc Name", "genre": "Genre",
+                             "userfiles": "Userfiles", "tracks": "Tracks"}
+
+    def __init__(self, library_cache_path: str | None = LIBRARY_CACHE_PATH):
         super().__init__()
         self.title(f"Ken Changer - CD-425M (v{APP_VERSION})")
         self.geometry("950x780")
@@ -749,6 +766,20 @@ class App(tk.Tk):
         # Backup tab (v1.10.0): one export or restore at a time.
         self._library_running = False
         self._library_stop = threading.Event()
+        self._library_label = None  # the progress label of the tab that started it
+
+        # Library tab (v1.11.0), see library_browser.py. _browser_raw is the
+        # last changer scan in backup form (what library_cache.json holds;
+        # None = no scan yet); _browser_library is what's shown, parsed --
+        # that scan, or a backup file opened with "Open Backup...".
+        self.library_cache_path = library_cache_path  # None: don't save or load
+        self._browser_raw: dict | None = None
+        self._browser_library: dict | None = None
+        self._browser_file: str | None = None  # the backup file shown, if not the scan
+        self._browser_sort = ("slot", False)
+        self._browser_genres: dict[str, int] = {}     # filter label -> genre code
+        self._browser_userfiles: dict[str, int] = {}  # filter label -> userfile number
+        self._browser_tracks_slot: int | None = None  # the disc the track pane shows
 
         # Mode code from the last "Set Mode" click, until an InfoEvent
         # reports it. Confirmed on real hardware: the changer ACKs a
@@ -761,6 +792,7 @@ class App(tk.Tk):
         self._build_ui()
         self._poll_ui_queue()
         self._refresh_ports()
+        self._load_library_cache()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -789,12 +821,17 @@ class App(tk.Tk):
 
         notebook = ttk.Notebook(body)
         notebook.pack(fill="both", expand=True)
+        self.notebook = notebook
 
         control_tab = ttk.Frame(notebook, padding=4)
         notebook.add(control_tab, text="Control")
 
+        library_tab = ttk.Frame(notebook, padding=4)
+        notebook.add(library_tab, text="Library")
+
         disc_data_tab = ttk.Frame(notebook, padding=4)
         notebook.add(disc_data_tab, text="Disc Data")
+        self.disc_data_tab = disc_data_tab
 
         disc_map_tab = ttk.Frame(notebook, padding=4)
         notebook.add(disc_map_tab, text="Disc Map")
@@ -1265,6 +1302,8 @@ class App(tk.Tk):
         self.backup_progress_label = ttk.Label(backup_toolbar, text="")
         self.backup_progress_label.pack(side="left", padx=12)
 
+        self._build_library_tab(library_tab)
+
         # -- Log console (outside the notebook -- visible on every tab) ---------
         log_frame = ttk.LabelFrame(body, text="Log", padding=4)
         log_frame.pack(fill="both", expand=False, pady=(4, 0))
@@ -1281,6 +1320,106 @@ class App(tk.Tk):
         self.log_text.configure(yscrollcommand=yscroll.set)
         self.log_text.pack(side="left", fill="both", expand=True)
         yscroll.pack(side="right", fill="y")
+
+    def _build_library_tab(self, tab):
+        """Library tab (v1.11.0): a disc table with search and filters, and
+        the selected disc's tracks below it. See library_browser.py."""
+        ttk.Label(
+            tab, wraplength=860, justify="left", foreground="gray",
+            text="Every disc in the changer. \"Scan Changer\" reads all 200 slots (the same "
+                 "walk as the Backup tab's export, so it takes about a minute), and is kept "
+                 "for next time. Search matches disc names, genres and track names. "
+                 "Double-click a disc or track to play it.",
+        ).pack(anchor="w", pady=(0, 4))
+
+        toolbar = ttk.Frame(tab)
+        toolbar.pack(fill="x")
+        self.lib_scan_btn = ttk.Button(toolbar, text="Scan Changer", command=self._start_library_scan)
+        self.lib_scan_btn.pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Open Backup...", command=self._open_browser_backup).pack(side="left", padx=2)
+        self.lib_last_scan_btn = ttk.Button(toolbar, text="Show Last Scan", state="disabled",
+                                            command=self._show_last_scan)
+        self.lib_last_scan_btn.pack(side="left", padx=2)
+        self.lib_stop_btn = ttk.Button(toolbar, text="Stop", state="disabled",
+                                       command=self._library_stop.set)
+        self.lib_stop_btn.pack(side="left", padx=2)
+        self.lib_progress_label = ttk.Label(toolbar, text="")
+        self.lib_progress_label.pack(side="left", padx=12)
+
+        self.lib_source_label = ttk.Label(tab, text="Nothing scanned yet.", foreground="#a05a00",
+                                          wraplength=860, justify="left")
+        self.lib_source_label.pack(anchor="w", pady=(4, 4))
+
+        filters = ttk.Frame(tab)
+        filters.pack(fill="x")
+        ttk.Label(filters, text="Search:").pack(side="left")
+        self.lib_search_var = tk.StringVar()
+        self.lib_search_var.trace_add("write", lambda *a: self._browser_refresh())
+        ttk.Entry(filters, textvariable=self.lib_search_var, width=28).pack(side="left", padx=4)
+        ttk.Label(filters, text="Genre:").pack(side="left", padx=(8, 0))
+        self.lib_genre_var = tk.StringVar(value="All genres")
+        self.lib_genre_combo = ttk.Combobox(filters, textvariable=self.lib_genre_var, width=20,
+                                            state="readonly", values=["All genres"])
+        self.lib_genre_combo.pack(side="left", padx=4)
+        self.lib_genre_combo.bind("<<ComboboxSelected>>", lambda e: self._browser_refresh())
+        ttk.Label(filters, text="Userfile:").pack(side="left", padx=(8, 0))
+        self.lib_userfile_var = tk.StringVar(value="All userfiles")
+        self.lib_userfile_combo = ttk.Combobox(filters, textvariable=self.lib_userfile_var, width=20,
+                                               state="readonly", values=["All userfiles"])
+        self.lib_userfile_combo.pack(side="left", padx=4)
+        self.lib_userfile_combo.bind("<<ComboboxSelected>>", lambda e: self._browser_refresh())
+        ttk.Button(filters, text="Clear", command=self._browser_clear_filters).pack(side="left", padx=4)
+        self.lib_count_label = ttk.Label(filters, text="")
+        self.lib_count_label.pack(side="left", padx=8)
+
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=(4, 0))
+        self.lib_play_btn = ttk.Button(actions, text="Play", command=self._browser_play)
+        self.lib_play_btn.pack(side="left", padx=2)
+        self.lib_edit_btn = ttk.Button(actions, text="Load in Disc Data Tab",
+                                       command=self._browser_open_in_disc_data)
+        self.lib_edit_btn.pack(side="left", padx=2)
+        self.lib_rescan_btn = ttk.Button(actions, text="Rescan Disc", command=self._browser_rescan_disc)
+        self.lib_rescan_btn.pack(side="left", padx=2)
+        ttk.Label(
+            actions, foreground="gray",
+            text="The Disc Data tab only shows the loaded disc, so this loads it (and starts it playing).",
+        ).pack(side="left", padx=8)
+
+        panes = ttk.PanedWindow(tab, orient="vertical")
+        panes.pack(fill="both", expand=True, pady=(4, 0))
+
+        disc_frame = ttk.Frame(panes)
+        self.lib_disc_tree = ttk.Treeview(disc_frame, columns=library_browser.SORT_KEYS,
+                                          show="headings", height=5, selectmode="browse")
+        for col, width in (("slot", 50), ("name", 300), ("genre", 150), ("userfiles", 130),
+                           ("tracks", 60)):
+            self.lib_disc_tree.heading(col, text=self.LIBRARY_COLUMN_TITLES[col],
+                                       command=lambda c=col: self._browser_sort_by(c))
+            self.lib_disc_tree.column(col, width=width, anchor="w", stretch=(col == "name"))
+        disc_scroll = ttk.Scrollbar(disc_frame, orient="vertical", command=self.lib_disc_tree.yview)
+        self.lib_disc_tree.configure(yscrollcommand=disc_scroll.set)
+        self.lib_disc_tree.pack(side="left", fill="both", expand=True)
+        disc_scroll.pack(side="right", fill="y")
+        self.lib_disc_tree.bind("<<TreeviewSelect>>", lambda e: self._browser_show_tracks())
+        self.lib_disc_tree.bind("<Double-1>", lambda e: self._browser_double_click(e, use_track=False))
+        panes.add(disc_frame, weight=3)
+
+        track_frame = ttk.Frame(panes)
+        self.lib_track_tree = ttk.Treeview(track_frame, columns=("track", "title"),
+                                           show="headings", height=3, selectmode="browse")
+        self.lib_track_tree.heading("track", text="Track")
+        self.lib_track_tree.heading("title", text="Track Name")
+        self.lib_track_tree.column("track", width=50, anchor="w", stretch=False)
+        self.lib_track_tree.column("title", width=500, anchor="w", stretch=True)
+        self.lib_track_tree.tag_configure("match", background="#fff3b0")
+        track_scroll = ttk.Scrollbar(track_frame, orient="vertical", command=self.lib_track_tree.yview)
+        self.lib_track_tree.configure(yscrollcommand=track_scroll.set)
+        self.lib_track_tree.pack(side="left", fill="both", expand=True)
+        track_scroll.pack(side="right", fill="y")
+        self.lib_track_tree.bind("<Double-1>", lambda e: self._browser_double_click(e, use_track=True))
+        panes.add(track_frame, weight=2)
+        self._update_browser_buttons()
 
     # ------------------------------------------------------------------
     # UI-thread-safe logging / status updates
@@ -2568,6 +2707,9 @@ class App(tk.Tk):
         # correctly. _note_query_slot only bootstraps the very first,
         # otherwise-unknown slot (a genuinely fresh connect), so it can't
         # cause the same problem in normal use.
+        self._send_change_disc(slot, track)
+
+    def _send_change_disc(self, slot: int, track: int):
         self._note_query_slot(slot, track)
         self._send_bg(
             proto.CMD_CHANGE_DISC,
@@ -3145,29 +3287,39 @@ class App(tk.Tk):
             return None
         return link
 
-    def _library_begin(self, text: str):
+    def _library_begin(self, text: str, label=None):
+        """Start an export, restore or Library scan. `label` is the
+        progress label of the tab it was started from (default: Backup)."""
         self._library_running = True
         self._library_stop.clear()
-        self.backup_export_btn.configure(state="disabled")
-        self.backup_restore_btn.configure(state="disabled")
+        self._library_label = label or self.backup_progress_label
+        for btn in (self.backup_export_btn, self.backup_restore_btn, self.lib_scan_btn,
+                    self.lib_rescan_btn):
+            btn.configure(state="disabled")
         self.backup_stop_btn.configure(state="normal")
-        self.backup_progress_label.configure(text=text)
+        self.lib_stop_btn.configure(state="normal")
+        self._library_label.configure(text=text)
 
     def _library_progress(self, text: str):
-        self.ui_queue.put(lambda: self.backup_progress_label.configure(text=text))
+        label = self._library_label
+        self.ui_queue.put(lambda: label.configure(text=text))
 
     def _library_finish(self, text: str, message: str | None = None):
         """Background thread: hand the end of an export/restore to the UI."""
         self._log(text)
 
+        label = self._library_label
+
         def done():
             self._library_running = False
-            self.backup_export_btn.configure(state="normal")
-            self.backup_restore_btn.configure(state="normal")
+            for btn in (self.backup_export_btn, self.backup_restore_btn, self.lib_scan_btn):
+                btn.configure(state="normal")
             self.backup_stop_btn.configure(state="disabled")
-            self.backup_progress_label.configure(text=text)
+            self.lib_stop_btn.configure(state="disabled")
+            self._update_browser_buttons()
+            label.configure(text=text)
             if message:
-                messagebox.showinfo("Backup", message)
+                messagebox.showinfo("Library" if label is self.lib_progress_label else "Backup", message)
         self.ui_queue.put(done)
 
     def _start_library_export(self):
@@ -3185,12 +3337,14 @@ class App(tk.Tk):
         self._log(f"Export: reading all {self.DISC_MAP_SLOT_COUNT} slots, then saving to {path}")
         threading.Thread(target=self._library_export_worker, args=(link, path), daemon=True).start()
 
-    def _library_export_worker(self, link: PCLinkConnection, path: str):
+    def _read_all_slots_sync(self, link: PCLinkConnection) -> tuple[list, list] | None:
+        """Background thread: every slot's backup record (the export and
+        the Library scan). Returns (disc records, unreadable slots), or
+        None if stopped or disconnected partway."""
         discs, unreadable = [], []
         for slot in range(1, self.DISC_MAP_SLOT_COUNT + 1):
             if self._library_stop.is_set() or self.link is not link:
-                self._library_finish("Export stopped -- nothing was saved.")
-                return
+                return None
             self._library_progress(
                 f"Reading slot {slot}/{self.DISC_MAP_SLOT_COUNT} ({len(discs)} disc(s) so far)...")
             state = self._read_slot_state_sync(link, slot)
@@ -3198,13 +3352,25 @@ class App(tk.Tk):
                 unreadable.append(slot)
             elif state["track_count"]:
                 discs.append(library_backup.disc_record(slot, **state))
+        return discs, unreadable
 
-        self._library_progress("Reading userfile names and the program...")
+    def _read_userfile_names_sync(self, link: PCLinkConnection) -> dict[int, str] | None:
+        """Background thread: the userfile names keyed by bit, or None."""
         self._userfile_name_cache.clear()
-        names = None
         if self._retrieve_sync(link, proto.DataType.TEXT_DATA, 0, proto.InfoType.USERFILE_NAMES,
                                "userfile names"):
-            names = dict(self._userfile_name_cache)
+            return dict(self._userfile_name_cache)
+        return None
+
+    def _library_export_worker(self, link: PCLinkConnection, path: str):
+        result = self._read_all_slots_sync(link)
+        if result is None:
+            self._library_finish("Export stopped -- nothing was saved.")
+            return
+        discs, unreadable = result
+
+        self._library_progress("Reading userfile names and the program...")
+        names = self._read_userfile_names_sync(link)
         if self._program_draft_dirty:
             # Reading the program replaces the editor's draft.
             self._log("Export: the program editor has unwritten edits, so the program wasn't "
@@ -3220,6 +3386,7 @@ class App(tk.Tk):
             discs, names, program, APP_VERSION,
             datetime.datetime.now().isoformat(timespec="seconds"),
         )
+        self.ui_queue.put(lambda: self._set_browser_scan(library))
         as_csv = path.lower().endswith(".csv")
         text = library_backup.library_to_csv(library) if as_csv else library_backup.library_to_json(library)
         try:
@@ -3382,6 +3549,240 @@ class App(tk.Tk):
         if self._program_items is not None and program_steps_from_items(self._program_items) == steps:
             return f"Program: {len(steps)} step(s) written and verified."
         return "Program: written, but the re-read didn't match."
+
+    # ------------------------------------------------------------------
+    # Library tab (v1.11.0) -- see library_browser.py
+    # ------------------------------------------------------------------
+
+    def _load_library_cache(self):
+        """Show the last changer scan, saved by an earlier session."""
+        path = self.library_cache_path
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            parsed = library_browser.load_library_text(text)
+        except (OSError, UnicodeDecodeError, library_backup.LibraryError) as exc:
+            self._log(f"Library: couldn't read the saved scan {path}: {exc}")
+            return
+        self._browser_raw = json.loads(text)
+        self._browser_file = None
+        self._show_browser_library(parsed)
+
+    def _set_browser_scan(self, raw: dict):
+        """UI thread: show a fresh changer scan (or export) and save it for
+        next time."""
+        self._browser_raw = raw
+        self._browser_file = None
+        if self.library_cache_path:
+            try:
+                library_browser.save_cache(self.library_cache_path, raw)
+            except OSError as exc:
+                self._log(f"Library: couldn't save the scan to {self.library_cache_path}: {exc}")
+        self._show_last_scan()
+
+    def _show_last_scan(self):
+        if self._browser_raw is not None:
+            self._browser_file = None
+            self._show_browser_library(
+                library_browser.load_library_text(library_backup.library_to_json(self._browser_raw)))
+
+    def _open_browser_backup(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="Open Backup",
+            filetypes=[("Library backup (*.json)", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                parsed = library_browser.load_library_text(f.read())
+        except (OSError, UnicodeDecodeError, library_backup.LibraryError) as exc:
+            messagebox.showerror("Open Backup", str(exc))
+            return
+        self._browser_file = path
+        self._show_browser_library(parsed)
+
+    def _show_browser_library(self, parsed: dict):
+        self._browser_library = parsed
+        when = library_browser.format_when(parsed.get("exported_at"))
+        if self._browser_file:
+            source = (f"From the backup file {os.path.basename(self._browser_file)}, made {when}. "
+                      "Slots may hold different discs now.")
+        else:
+            source = (f"From a changer scan on {when}. Discs moved, added or renamed since "
+                      "then won't show until you scan again.")
+        self.lib_source_label.configure(text=source)
+
+        self._browser_genres = dict(library_browser.genre_choices(parsed["discs"]))
+        self._browser_userfiles = dict(library_browser.userfile_choices(parsed["userfile_names"]))
+        self.lib_genre_combo.configure(values=["All genres", *self._browser_genres])
+        self.lib_userfile_combo.configure(values=["All userfiles", *self._browser_userfiles])
+        if self.lib_genre_var.get() not in self._browser_genres:
+            self.lib_genre_var.set("All genres")
+        if self.lib_userfile_var.get() not in self._browser_userfiles:
+            self.lib_userfile_var.set("All userfiles")
+        self._browser_refresh()
+
+    def _browser_clear_filters(self):
+        self.lib_genre_var.set("All genres")
+        self.lib_userfile_var.set("All userfiles")
+        self.lib_search_var.set("")
+        self._browser_refresh()
+
+    def _browser_sort_by(self, key: str):
+        current, reverse = self._browser_sort
+        self._browser_sort = (key, not reverse if key == current else False)
+        self._browser_refresh()
+
+    def _browser_refresh(self):
+        """Refill the disc table from the library, search and filters,
+        keeping the selected disc selected if it's still shown."""
+        selected = self.lib_disc_tree.selection()
+        self.lib_disc_tree.delete(*self.lib_disc_tree.get_children())
+        if self._browser_library is None:
+            self.lib_count_label.configure(text="")
+            self._browser_show_tracks()
+            return
+        discs = self._browser_library["discs"]
+        shown = library_browser.filter_discs(
+            discs, self.lib_search_var.get(),
+            genre=self._browser_genres.get(self.lib_genre_var.get()),
+            userfile=self._browser_userfiles.get(self.lib_userfile_var.get()),
+        )
+        key, reverse = self._browser_sort
+        for disc in library_browser.sort_discs(shown, key, reverse):
+            self.lib_disc_tree.insert("", "end", iid=str(disc["slot"]),
+                                      values=library_browser.disc_row(disc))
+        for col, text in self.LIBRARY_COLUMN_TITLES.items():
+            arrow = (" ▼" if reverse else " ▲") if col == key else ""
+            self.lib_disc_tree.heading(col, text=text + arrow)
+        self.lib_count_label.configure(text=library_browser.summary(shown, discs))
+        if selected and self.lib_disc_tree.exists(selected[0]):
+            self.lib_disc_tree.selection_set(selected[0])
+            self.lib_disc_tree.see(selected[0])
+        # Also refreshes the track highlights for a new search, since
+        # re-selecting the same disc doesn't fire <<TreeviewSelect>>.
+        self._browser_show_tracks()
+
+    def _browser_selected_disc(self) -> dict | None:
+        selected = self.lib_disc_tree.selection()
+        if not selected or self._browser_library is None:
+            return None
+        slot = int(selected[0])
+        return next((d for d in self._browser_library["discs"] if d["slot"] == slot), None)
+
+    def _browser_show_tracks(self):
+        disc = self._browser_selected_disc()
+        query = self.lib_search_var.get()
+        same_disc = disc is not None and disc["slot"] == self._browser_tracks_slot
+        keep = self.lib_track_tree.selection() if same_disc else ()
+        self.lib_track_tree.delete(*self.lib_track_tree.get_children())
+        self._browser_tracks_slot = None if disc is None else disc["slot"]
+        if disc is not None:
+            matches = library_browser.matching_tracks(disc, query)
+            for n, title in library_browser.track_rows(disc):
+                self.lib_track_tree.insert("", "end", iid=str(n), values=(n, title),
+                                           tags=("match",) if n in matches else ())
+            if keep and self.lib_track_tree.exists(keep[0]):
+                self.lib_track_tree.selection_set(keep[0])
+        self._update_browser_buttons()
+
+    def _update_browser_buttons(self):
+        has_disc = self._browser_selected_disc() is not None
+        for btn in (self.lib_play_btn, self.lib_edit_btn):
+            btn.configure(state="normal" if has_disc else "disabled")
+        # Rescan updates the saved scan, so not while a backup file is shown.
+        can_rescan = (has_disc and self._browser_file is None and self._browser_raw is not None
+                      and not self._library_running)
+        self.lib_rescan_btn.configure(state="normal" if can_rescan else "disabled")
+        self.lib_last_scan_btn.configure(
+            state="normal" if self._browser_file and self._browser_raw is not None else "disabled")
+
+    def _browser_target(self, use_track: bool | None = None) -> tuple[int, int] | None:
+        """(slot, track) to play: the selected disc, at the selected track
+        (use_track None/True) or track 1 (use_track False)."""
+        disc = self._browser_selected_disc()
+        if disc is None:
+            return None
+        track = 1
+        selected = self.lib_track_tree.selection()
+        if use_track is not False and selected:
+            track = int(selected[0])
+        return disc["slot"], track
+
+    def _browser_double_click(self, event, use_track: bool):
+        tree = self.lib_track_tree if use_track else self.lib_disc_tree
+        if tree.identify_region(event.x, event.y) == "cell":
+            self._browser_play(use_track)
+
+    def _browser_play(self, use_track: bool | None = None):
+        target = self._browser_target(use_track)
+        if target is not None:
+            self._send_change_disc(*target)
+
+    def _browser_open_in_disc_data(self):
+        """The Disc Data tab follows the loaded disc (and its TOC, which is
+        only readable for the loaded disc, CONFIRMED), so load it first."""
+        target = self._browser_target()
+        if target is None or self._require_link() is None:
+            return
+        self._send_change_disc(*target)
+        self.notebook.select(self.disc_data_tab)
+
+    def _start_library_scan(self):
+        link = self._library_can_start()
+        if link is None:
+            return
+        self._library_begin("Starting scan...", self.lib_progress_label)
+        self._log(f"Library: scanning all {self.DISC_MAP_SLOT_COUNT} slots.")
+        threading.Thread(target=self._library_scan_worker, args=(link,), daemon=True).start()
+
+    def _library_scan_worker(self, link: PCLinkConnection):
+        result = self._read_all_slots_sync(link)
+        if result is None:
+            self._library_finish("Scan stopped -- the library wasn't changed.")
+            return
+        discs, unreadable = result
+        self._library_progress("Reading userfile names...")
+        names = self._read_userfile_names_sync(link)
+        library = library_backup.build_library(
+            discs, names, None, APP_VERSION, datetime.datetime.now().isoformat(timespec="seconds"))
+        self.ui_queue.put(lambda: self._set_browser_scan(library))
+        if unreadable:
+            self._log(f"Library: {len(unreadable)} slot(s) couldn't be read: {unreadable}")
+        unknown = [d["slot"] for d in discs if d["track_count"] is None]
+        if unknown:
+            self._log(f"Library: {len(unknown)} disc(s) haven't been played since the changer "
+                      f"was switched on, so their track count isn't known: {unknown}")
+        self._library_finish(f"Scan done: {len(discs)} disc(s)"
+                             + (f", {len(unreadable)} slot(s) unreadable." if unreadable else "."))
+
+    def _browser_rescan_disc(self):
+        disc = self._browser_selected_disc()
+        if disc is None or self._browser_raw is None or self._browser_file:
+            return
+        link = self._library_can_start()
+        if link is None:
+            return
+        slot = disc["slot"]
+        self._library_begin(f"Rescanning slot {slot}...", self.lib_progress_label)
+        threading.Thread(target=self._library_rescan_worker, args=(link, slot), daemon=True).start()
+
+    def _library_rescan_worker(self, link: PCLinkConnection, slot: int):
+        state = self._read_slot_state_sync(link, slot)
+        if state["track_count"] is None:
+            self._library_finish(f"Rescan: couldn't read slot {slot}; the library wasn't changed.")
+            return
+        record = library_backup.disc_record(slot, **state) if state["track_count"] else None
+
+        def done():
+            if self._browser_raw is not None:
+                self._set_browser_scan(library_browser.replace_disc(self._browser_raw, record, slot))
+        self.ui_queue.put(done)
+        self._library_finish(f"Rescan: slot {slot} updated." if record else
+                             f"Rescan: slot {slot} is empty now; removed from the library.")
 
     def _reset_disc_map(self):
         """Changer-sourced state, so cleared on disconnect like the other

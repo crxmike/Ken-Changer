@@ -197,7 +197,7 @@ class TestProgramWrite(unittest.TestCase):
 
 class _AppTestCase(unittest.TestCase):
     def setUp(self):
-        self.app = app_mod.App()
+        self.app = app_mod.App(library_cache_path=None)
         self.app._send_bg = lambda *a, **kw: None
         _FakeThread.started = []
 

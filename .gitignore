@@ -4,3 +4,7 @@ kenwood-pclink.zip
 
 # Kenwood owner's manual: kept locally for reference, not committed (copyright)
 protocol_reference/*.pdf
+
+# Library tab: the last changer scan (v1.11.0), rebuilt by "Scan Changer"
+library_cache.json
+library_cache.json.tmp

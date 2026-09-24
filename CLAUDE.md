@@ -41,7 +41,8 @@ the Backup tab's export/restore all confirmed; exact gnudb DiscID
 matches don't happen on this changer, most likely because gnudb stores
 those entries under non-standard IDs -- see CHANGELOG v1.9.2; DiscInfo
 reports 99 tracks for discs not played since power-on -- see CHANGELOG
-v1.10.1).
+v1.10.1). v1.11.1: the Library tab (browse/search/play every disc) is
+confirmed too.
 
 ## Files
 
@@ -54,6 +55,8 @@ v1.10.1).
   iTunes search (v1.9.1; needs Pillow).
 - `library_backup.py` -- Backup tab: backup file format and restore
   planning (v1.10.0).
+- `library_browser.py` -- Library tab: search, filters, sorting and the
+  last-scan cache, `library_cache.json` (v1.11.0).
 - `test_write_feature.py` -- tests for the in-progress write feature.
 - `test_genre_feature.py` -- tests for the genre read/write feature
   (v1.4.0).
@@ -69,6 +72,8 @@ v1.10.1).
   (v1.9.0).
 - `test_library_backup.py` -- tests for library backup/restore against a
   simulated changer (v1.10.0).
+- `test_library_browser.py` -- tests for the Library tab (v1.11.0;
+  confirmed on real hardware in v1.11.1).
 - `protocol_reference/` -- original source docs
   (`https://juken.sourceforge.net/protocol/`) this project was built
   from. For anything touching write-side commands

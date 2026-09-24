@@ -410,9 +410,11 @@ def _library_discs():
 
 class _AppTestCase(unittest.TestCase):
     def setUp(self):
-        self.app = app_mod.App()
-        self.app._send_bg = lambda *a, **kw: None
         self.tmp = tempfile.TemporaryDirectory()
+        # An export also saves the Library tab's scan (v1.11.0); keep it out
+        # of the real library_cache.json.
+        self.app = app_mod.App(library_cache_path=os.path.join(self.tmp.name, "cache.json"))
+        self.app._send_bg = lambda *a, **kw: None
         self.messages = []
         self._showinfo = app_mod.messagebox.showinfo
         app_mod.messagebox.showinfo = lambda title, msg, **kw: self.messages.append(msg)
