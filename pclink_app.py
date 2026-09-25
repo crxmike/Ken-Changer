@@ -34,6 +34,7 @@ except ImportError:
 import pclink_protocol as proto
 from pclink_link import (
     PCLinkConnection, PCLinkError, PCLinkTimeout, PCLinkNak, PCLinkWriteUnconfirmed,
+    PCLinkTextStream,
 )
 from pclink_protocol import Frame
 import gnudb_client
@@ -225,7 +226,7 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # on the CD-425M (probe_artist_name.py, real hardware). pclink_link.py now
 # raises PCLinkRejected when the changer answers a frame with EOT instead
 # of ACK; before, a refused write was logged as done.
-APP_VERSION = "1.12.3"
+APP_VERSION = "1.12.9"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -746,6 +747,10 @@ class App(tk.Tk):
         self._current_slot: int | None = None
         self._current_track: int | None = None
         self._disc_name_cache: dict[int, str] = {}          # slot -> name
+        # Slots whose last name read hit the endless LongTextData stream
+        # (v1.12.4, pclink_link.PCLinkTextStream), so the track-name read
+        # right after it is skipped rather than streaming again.
+        self._text_stream_slots: set[int] = set()
         self._track_name_cache: dict[int, dict[int, str]] = {}  # slot -> {track: name}
         self._genre_cache: dict[int, int] = {}               # slot -> genre code
         # slot -> {"tracks": {track_num: {minutes,seconds,frames}},
@@ -1705,6 +1710,15 @@ class App(tk.Tk):
             p = frame.payload
             index = p.get("index", p.get("track"))
             text = p.get("text")
+            if frame.command == proto.CMD_LONG_TEXT_DATA and proto.is_placeholder_text(text or ""):
+                # The endless stream a disc sends while it's in the drive
+                # (v1.12.4, see pclink_link.PCLinkTextStream). It says
+                # nothing about the stored names, so it isn't cached --
+                # before v1.12.4 it blanked the disc name in the app.
+                if p.get("seq") == 1:
+                    self._log(f"LongTextData: slot={p.get('slot')} sending empty text "
+                              f"frames (seq counting up) -- not stored names")
+                return
             note = "  (placeholder: no title stored)" if proto.is_placeholder_text(text or "") else ""
             self._log(f"Text: slot={p.get('slot')} index={index} -> {text!r}{note}")
             self._cache_name(p)
@@ -1834,23 +1848,26 @@ class App(tk.Tk):
 
     def _fetch_names_for_slot(self, slot: int):
         """Auto-triggered fetch (as opposed to the manual Get Disc Name /
-        Get Track Names buttons, which use the slot spinbox)."""
-        self._send_bg(
-            proto.CMD_DATA_ACCESS,
-            proto.encode_data_access(
-                proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA, slot=slot,
-                info_type=proto.InfoType.DISC_NAMES,
-            ),
-            f"DataAccess(DiscName, slot={slot}) [auto]",
-        )
-        self._send_bg(
-            proto.CMD_DATA_ACCESS,
-            proto.encode_data_access(
-                proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA, slot=slot,
-                info_type=proto.InfoType.TRACK_NAMES,
-            ),
-            f"DataAccess(TrackNames, slot={slot}) [auto]",
-        )
+        Get Track Names buttons, which use the slot spinbox). The two reads
+        run one after the other, so the track names can be skipped when
+        the disc name hit the endless LongTextData stream (v1.12.4): each
+        stream costs about 13s of link time on real hardware."""
+        link = self._require_link()
+        if link is None:
+            return
+
+        def work():
+            if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot,
+                                   proto.InfoType.DISC_NAMES, "disc name"):
+                self._log(f"TX DataAccess(DiscName, slot={slot}) [auto] - sent ok")
+            if slot in self._text_stream_slots:
+                self._log(f"Skipping slot {slot}'s track names: they'd stream the same way.")
+                return
+            if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot,
+                                   proto.InfoType.TRACK_NAMES, "track names"):
+                self._log(f"TX DataAccess(TrackNames, slot={slot}) [auto] - sent ok")
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Table of Contents / DiscID
@@ -2502,12 +2519,17 @@ class App(tk.Tk):
         through."""
         data = proto.encode_data_access(proto.Action.RETRIEVE_DATA, data_type,
                                         slot=slot, info_type=info_type)
+        self._text_stream_slots.discard(slot)
         for attempt in range(3):
             try:
                 link.send(proto.CMD_DATA_ACCESS, data)
                 return True
             except PCLinkTimeout:
                 time.sleep(0.1)
+            except PCLinkTextStream as exc:
+                self._text_stream_slots.add(slot)
+                self._log(f"Reading slot {slot}'s {what} failed: {exc}")
+                return False
             except PCLinkError as exc:
                 self._log(f"Reading slot {slot}'s {what} failed: {exc}")
                 return False
@@ -3345,9 +3367,15 @@ class App(tk.Tk):
         if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot, proto.InfoType.DISC_NAMES,
                                "disc name"):
             state["name"] = self._disc_name_cache.get(slot)
-        if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot, proto.InfoType.TRACK_NAMES,
-                               "track names"):
-            state["tracks"] = dict(self._track_name_cache.get(slot, {}))
+        if slot in self._text_stream_slots:
+            self._log(f"Skipping slot {slot}'s track names: they'd stream the same way.")
+        elif self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot, proto.InfoType.TRACK_NAMES,
+                                 "track names"):
+            # No TrackNames frame at all (the read closed with no reply)
+            # means not read, not "no names": v1.12.4's hardware test
+            # saved slot 4 with an empty track list that way.
+            tracks = self._track_name_cache.get(slot)
+            state["tracks"] = None if tracks is None else dict(tracks)
         if self._retrieve_sync(link, proto.DataType.DISC_GENRE, slot, what="genre"):
             state["genre"] = self._genre_cache.get(slot)
         if self._retrieve_sync(link, proto.DataType.DISC_USERFILES, slot, what="userfiles"):
@@ -3856,21 +3884,31 @@ class App(tk.Tk):
         if state["track_count"] is None:
             self._library_finish(f"Rescan: couldn't read slot {slot}; the library wasn't changed.")
             return
+        unread = [f for f in library_browser.RESCAN_FIELDS if state[f] is None]
         self._browser_update_slot(slot, state)
-        self._library_finish(f"Rescan: slot {slot} updated." if state["track_count"] else
-                             f"Rescan: slot {slot} is empty now; removed from the library.")
+        if not state["track_count"]:
+            self._library_finish(f"Rescan: slot {slot} is empty now; removed from the library.")
+        elif unread:
+            self._library_finish(f"Rescan: slot {slot} updated, but its {', '.join(unread)} "
+                                 f"couldn't be read, so the saved values were kept.")
+        else:
+            self._library_finish(f"Rescan: slot {slot} updated.")
 
     def _browser_update_slot(self, slot: int, state: dict):
         """Background thread: put a fresh read of one slot into the saved
         scan (removing the disc if the slot is empty now). An unreadable
-        slot leaves the scan alone."""
+        slot leaves the scan alone, and so does a field that couldn't be
+        read (v1.12.4, see library_browser.keep_unread_fields)."""
         if state["track_count"] is None:
             return
         record = library_backup.disc_record(slot, **state) if state["track_count"] else None
 
         def done():
             if self._browser_raw is not None:
-                self._set_browser_scan(library_browser.replace_disc(self._browser_raw, record, slot))
+                new = record
+                if new is not None:
+                    new, _kept = library_browser.keep_unread_fields(self._browser_raw, new)
+                self._set_browser_scan(library_browser.replace_disc(self._browser_raw, new, slot))
         self.ui_queue.put(done)
 
     def _browser_fill_userfile_menu(self):

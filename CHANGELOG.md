@@ -1,5 +1,276 @@
 # Changelog
 
+## v1.12.9 -- DataAccess's "unknown" byte is a track number: full CD-Text track names from the disc
+
+**The lead:** the user's own earlier program (`KENWOODv2.pde`, Processing)
+read the current track's name from this CD-Text disc while it played. Its
+track-name request puts the track number in the byte after the slot,
+which `cd_dataaccess.html` calls "unknown" and this app always sends as
+`0x00`: `02 03 07 00 00 01 <slot> 00 <track> 01 00 <cs>`.
+`probe_cdtext_stream.py` got `--tracks N,N,...` to do the same (its
+encoder reproduces KENWOODv2's disc 1 / track 1 frame byte for byte).
+
+**CONFIRMED on the real CD-425M** (2026-09-25 16:35, raw-byte log, slot 4
+in the drive and playing):
+- Track 1 (`02 03 07 00 00 01 04 00 01 01 00 ef`): one `LongTextData`
+  frame after ~0.25s, `02 fd 14 00 04 00 01 00 01 06 90 01 53 69 6c ...`
+  = slot 4, **track 1**, userfiles 0, info_type 1, genre `0x06`, format
+  `0x90`, `seq` 1, "Silent Night"; then the changer's EOT. No stream.
+- Track 2: "O Holy Night". Track 3: **"We Wish You A Merry Christmas"**
+  (29 characters). Track 10: **"Hark! The Herald Angels Sing"** (28). The
+  names come from the disc and are **not cut to 25 characters**, unlike
+  the stored copy. Each fits in one frame, `seq` 1.
+- Track 11 (past the last track): ACK, then the changer's EOT, no frame.
+- Genre and userfiles read normally afterwards.
+
+**So the endless stream is what "track 0" gets on this disc:** track 0
+is the disc title, the user confirms the disc has none (the front panel
+shows "----" for it), and asking for it loops over empty frames instead
+of answering. Every read the app sends asks for track 0.
+
+**Also CONFIRMED, same day 16:40, slot 2 in the drive:**
+- Slot 1 (no CD-Text, format `0x00`), tracks 1, 2, 12: one **`TextData`**
+  frame each with just that track's stored name ("Gift Shop",
+  "Springtime in Vienna", "Put It Off"), then EOT. Track 13 (past the
+  last): ACK, EOT, no frame.
+- Slot 4 (the CD-Text disc, out of the drive), tracks 1 and 3: one
+  **`TextData`** frame each from the stored copy, cut to 25 characters
+  ("We Wish You A Merry Chris").
+
+**The model this gives** (one CD-Text disc and one ordinary disc seen):
+- The byte after the slot in `DataAccess` is a track number. `0` means
+  "all": for track names, every stored name in one reply (the index-0
+  frame repeating the disc name, as always); for the disc name, the disc
+  name. `N` means just track N. Past the last track: no frame.
+- Stored names come back as `TextData` (25 characters max). A CD-Text
+  disc **in the drive** answers from the disc instead, as
+  `LongTextData`, full length. Asked for track 0 when the disc has no
+  CD-Text disc title, it loops forever on empty frames (v1.12.8), and a
+  "track names, all" read never gets past track 0.
+No app change yet besides the version bump.
+
+## v1.12.8 -- probe_cdtext_stream.py: the stream is an endless 70-frame loop with nothing in it
+
+**New probe, run on the real CD-425M** (2026-09-25, 16:09-16:20, after a
+power cycle and ALL DATA READ). `probe_cdtext_stream.py` reads slot 4's
+DiscInfo, disc name, track names, genre and userfiles, letting each name
+read's reply run for 60s (ACKing every frame) instead of cutting it off
+after 5. To allow that, `PCLinkConnection.send()` got `reply_window=` and
+`let_stream_run=` (probe-only; the app doesn't use them). Three runs:
+
+1. **Slot 4 playing** and 2. **slot 4 in the drive, stopped** -- identical:
+   - Disc name and track names: first frame after ~1.8s, then 1050
+     `LongTextData` frames in the 60s, all the same except `seq`: slot 4,
+     track 0, info_type as requested, userfiles 0, genre `0x06`, format
+     `0x90`, text `0x01`.
+   - **`seq` runs 1 to 70, then starts again at 1**, with no gaps: 15
+     full cycles in each read. Each cycle is ~1.75s of silence (the same
+     as the wait before the first frame) then 70 frames ~0.03s apart
+     (~3.9s per cycle). It never ended by itself and never carried any
+     text. What the 70 counts is unknown.
+   - All four cut-offs landed in the silence between cycles: the changer
+     sent seq 1 of the next cycle, got no ACK, and went quiet (~3s in
+     all, ended by our 2.5s-quiet fallback). Earlier mid-cycle cut-offs
+     took up to 10s (v1.12.5).
+   - Genre (`0x06`) and userfiles (`0x00`) read normally afterwards.
+3. **Another disc (slot 2) playing**: slot 4's stored names came back as
+   ordinary `TextData` straight away: disc name `0x01` (empty), track
+   names "Silent Night" ... "Hark! The Herald Angels S" (the disc's
+   CD-Text, cut to 25 characters).
+
+**CONFIRMED:** over PC-Link, a CD-Text disc in the drive gives no text at
+all, playing or stopped: the stream is an endless loop of empty frames,
+so there's nothing to wait for, and the app's cut-off after 5 frames
+loses nothing. The only way to read its titles is the stored copy, read
+while another disc is in the drive.
+
+Tests: `test_probe_cdtext_stream.py` (5). `probe_artist_name.py` and the
+new probe now import `serial.tools` only in `main()`, so their tests also
+load in a full `unittest discover` run (the old "one import error").
+
+## v1.12.7 -- Next Track on the CD-Text disc: it jumps to the next disc, and its stored names turn into its CD-Text
+
+**Clean test on the real CD-425M** (2026-09-25, raw-byte log,
+15:30-15:35), slot 4 (the CD-Text disc, format `0x90`):
+1. 15:32:15, slot 4 playing track 6: wrote "Title" and "Name 1"-"Name
+   10" (genre now Christian). Every payload ACK'd.
+2. 15:33:07, slot 1 in the drive: Rescan of slot 4 read back "Title" and
+   "Name 1"-"Name 10". Stored.
+3. 15:33:30, ChangeDisc to slot 4: its reads during "Changing" still
+   returned "Title" etc.; Playing from 15:33:44.
+4. 15:34:10, Next Track from the app (`DoAction` `a0 cf`, then Finish
+   Repeatable): InfoEvent slot 4 **track 2**, then Changing, then
+   InfoEvent **slot 1 track 1**. The changer went to the next disc
+   (slots 1, 3 and 4 are loaded, so after 4 comes 1) instead of track 2.
+   Next Track on slot 1 afterwards worked normally (15:34:43).
+5. 15:35:04, slot 1 in the drive: Rescan of slot 4 read disc name `0x01`
+   and track names "Silent Night" ... "Hark! The Herald Angels S", the
+   disc's CD-Text titles. Genre stayed Christian and userfiles `0x00`.
+
+**The first log of the day shows the same thing** (v1.12.4): at 14:15:00
+Next Track on slot 4 gave InfoEvent slot 4 track 2, Changing, then slot
+1 track 1, and at 14:15:31 slot 4's disc name "Acoustic Christmas
+Celebr" was `0x01`. The sessions in between with no Next Track on slot 4
+(14:36-14:42, 14:58) kept the written names through reloads and play.
+
+So in both logged cases, **Next Track on this disc sent the changer to
+the next disc, and the disc's stored names were replaced by its CD-Text,
+with the disc name emptied.** Whether the track change itself triggers
+it (so a natural move from track 1 to 2 would too), or only the Next
+Track command, or whether the remote does the same, isn't known. Nor is
+why the changer leaves the disc. The manual says CD-Text discs can't be
+given titles (README's "Owner's manual notes"), which fits the changer
+restoring the CD-Text. Not a link or app bug as far as the log shows:
+the app sent the same two DoAction frames that work on slot 1.
+
+No code change besides the version bump.
+
+## v1.12.6 -- v1.12.5 CONFIRMED; slot 4's stored names turned into the disc's CD-Text
+
+**v1.12.5 confirmed on the real CD-425M** (2026-09-25, raw-byte log,
+15:18-15:20), slot 4 in the drive:
+- Connecting (15:18:14): the automatic disc-name read streamed, was cut
+  off, and "Skipping slot 4's track names" followed. Genre and TOC read
+  normally.
+- Rescan (15:18:37): one stream, cut off, track names skipped, genre and
+  userfiles read, and "its name, tracks couldn't be read, so the saved
+  values were kept". No retries, no second stream, no empty track list.
+- A manual Get Track Names (15:19:23): one stream, one error line, no
+  retry.
+- The cut-off ended three different ways, all handled: the changer
+  starting an event (StateEvent ENQ right after one re-sent frame, under
+  a second), 3s of quiet after one re-sent frame, and 5 re-sent frames
+  then EOT (10s).
+
+**Not understood: slot 4's stored names changed.** At 14:58:30 slot 4
+read back "Title" and "Name 1"-"Name 10" (written at 14:38). At 15:20:24,
+read with slot 3 in the drive, its disc name was `0x01` (empty) and its
+track names were the disc's CD-Text titles: "Silent Night", "O Holy
+Night", ... "Hark! The Herald Angels S" (cut to 25 characters), the
+titles the front panel shows from the disc. **This proves nothing on
+its own:** between 14:59 and 15:18 the user was writing various things
+to the disc from the app, and that isn't logged, so an app write may
+explain it.
+
+The one case with a complete log is v1.12.4's "lost" disc name: between
+14:13:42 and 14:15:31 (the 14:12-14:16 log, no writes in it) slot 4's
+disc name went from "Acoustic Christmas Celebr" to `0x01`, while its
+track names were these same CD-Text titles throughout. That fits the
+changer replacing its stored titles with the disc's CD-Text (which
+seems to have no disc title), but it's a single case and the trigger is
+unknown.
+
+The owner's manual backs this up (pp. 28-29): titles can be registered
+only for non-CD-Text discs ("For discs corresponding to CD-TEXT, a new
+title can not be registered"), and a CD-Text disc's own titles are
+"memorized" by the changer. ALL DATA READ reads CD-Text into memory; the
+manual doesn't say what else does. Over PC-Link the changer accepts the
+write, and kept "Title" etc. for at least 20 minutes and several
+reloads; whether it keeps it for good isn't known. See README's
+"Owner's manual notes".
+
+No code change besides the version bump.
+
+## v1.12.5 -- The stream cut-off works on hardware; three follow-up bugs fixed
+
+**v1.12.4 tested on the real CD-425M** (2026-09-25, raw-byte log, 14:58).
+First a Rescan of slot 4 with slot 3 in the drive, and a ChangeDisc to
+slot 4 with its reads during "Changing": all stored names came back as
+`TextData`, as before. Then a Rescan of slot 4 with slot 4 in the drive:
+- **Detection works (CONFIRMED):** 5 stream frames (seq 1-5), then our
+  EOT at 14:59:14. The log showed one line for the stream instead of 40.
+- **Cut-off works but takes 10s (CONFIRMED):** the changer re-sent the
+  frame we didn't ACK (seq 6) 5 times, 2s apart, then sent EOT at
+  14:59:24. We ACK'd it, and the next ENQ got an ACK straight away. The
+  resent frames were skipped whole, so their slot byte `04` wasn't taken
+  for EOT.
+- **The Rescan kept the saved disc name (CONFIRMED):** "Rescan: slot 4
+  updated, but its name couldn't be read, so the saved values were kept."
+
+**Three bugs the same log shows, fixed here (not yet seen on hardware):**
+- **`send()` gave up after a flat 5s,** less than the 10s cut-off. The
+  read's caller took that as a timeout and retried twice. The retries
+  were queued behind the cut-off, and the first one started the stream
+  over at 14:59:24 (its reply began only as our EOT went out, 3s later,
+  so the stream wasn't caught, and the old unsynchronized mess followed
+  until 14:59:31). Now `send()`'s timeout covers only the wait for the
+  request to START. Once started, it waits for the transaction to end,
+  which is always bounded. A request whose caller gave up before it
+  started is dropped instead of being sent later.
+- **A name read that got no frames back counted as "no names".** The
+  track-name read at 14:59:28 got no frame before the reply window
+  closed, and the Rescan saved slot 4 with an empty track list. It's now
+  "couldn't read", so the saved track names are kept.
+- **The track-name read ran even after the disc name streamed,** which
+  would cost another ~13s of link time for nothing. After a stream, the
+  Rescan (and the automatic fetch when a disc becomes current, now one
+  read after the other instead of two parallel ones) skips it and logs
+  why.
+
+Tests: 6 more in `test_cdtext_stream.py`, replaying the 14:59 cut-off and
+reads.
+
+## v1.12.4 -- A CD-Text disc in the drive answers name reads with an endless stream
+
+**Seen on real hardware** (2026-09-25, raw-byte logs, 14:12 to 14:42).
+Slot 4 ("Acoustic Christmas Celebr", genre Folk, DiscInfo format `0x90`,
+the only disc so far with that format):
+- **While slot 4 is in the drive** (playing or stopped), every name read
+  (`DataAccess(RETRIEVE, TextData)`, disc names or track names) gets ACK,
+  then after 2-3 seconds an endless run of `LongTextData` (`0xFD`) frames,
+  e.g. `02 fd 09 00 04 00 00 00 00 0b 90 01 01 59`: slot 4, track 0, text
+  `0x01`, and a byte after the format that counts up 01, 02, ... 0x28 in
+  about a second. The track never moves on. It happened in all five
+  sessions, every time the disc was in the drive.
+- **While another disc is in the drive** (or slot 4 is still
+  "Changing"), the same reads return slot 4's stored names as ordinary
+  `TextData`, e.g. 14:42:28 `02 fe 0c 00 04 00 00 00 00 0b 90 54 69 74 6c
+  65 55` ("Title").
+- **The front panel shows the disc's own CD-Text** while it plays:
+  "Silent Night" on track 1, where the stored name is "Name 1". So the
+  changer reads text off this disc, and the stream is probably its
+  attempt to send that. `0x90` may mean "CD-Text", but empty slots 100-102
+  report it too (v1.7.1), so it stays "Unknown (0x90)".
+- **Writes work with the disc in the drive.** "Title" and "Name 1" to
+  "Name 10" were written at 14:38:41 (ReadyForData raw byte 1, every
+  payload ACK'd) and read back exactly at 14:42:28 with slot 3 in the
+  drive. Our frames carry format `0x00`, and the changer kept `0x90`.
+- The `LongTextData` layout matches `cd_longtextdata.html`, and its three
+  "unknown" bytes are userfiles (`0x00`), genre (`0x0b`) and the counter.
+  The decoder now names them `userfiles`, `genre` and `seq`.
+
+**What the stream did to the app:** the 3-second reply window closed
+mid-stream and our EOT went out. The changer carried on, re-sent the
+frame we never ACK'd, then sent EOT every ~2s (3 times) before going
+quiet: 8-10 seconds in which every queued read (genre, TOC, userfiles)
+got stream bytes instead of an ACK and failed. The app also stored the
+stream's `0x01` as "no disc name", and "Rescan Disc" saved slot 4 to
+`library_cache.json` with no name, tracks, genre or userfiles (twice).
+
+**Changes, NOT yet seen on real hardware:**
+- `pclink_link.py`: 5 placeholder `LongTextData` frames in a row for the
+  same slot/track/info_type count as the stream. The link sends EOT, then
+  discards everything without ACKing (skipping re-sent frames whole, since
+  their slot byte `0x04` is also EOT) until the changer's EOT, which it
+  ACKs, or 2.5s of quiet. The read raises `PCLinkTextStream` ("play
+  another disc, then read it again"), which every read path already logs
+  as an error. ACKing the changer's EOT is a guess that it ends the
+  stream sooner: its repeated EOTs look like it waiting for that ACK.
+- `pclink_app.py`: placeholder `LongTextData` frames aren't cached, and
+  are logged once per stream rather than per frame.
+- "Rescan Disc" (and the Library's userfile changes, which re-read the
+  slot the same way) keeps the saved value of any field it couldn't read
+  (`library_browser.keep_unread_fields`) and says which.
+
+**Unexplained:** slot 4's stored disc name went from "Acoustic Christmas
+Celebr" (14:13:42) to `0x01` (14:15:31) with its track names intact and
+no write from the app in between. The suspect was cutting off a
+disc-name stream (14:14:43), but three later cut-offs (14:38:53,
+14:39:25, 14:41:39) left "Title" intact. Also unknown: whether the stream
+ever ends by itself.
+
+Tests: `test_cdtext_stream.py` (14), from these logs' frames.
+
 ## v1.12.3 -- The CD-425M has no artist-name field; a refused frame is no longer taken for an ACK
 
 **Experiment: the artist-name text type** (2026-09-25, raw-byte log,

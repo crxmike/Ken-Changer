@@ -46,7 +46,6 @@ import time
 from datetime import datetime
 
 import serial
-from serial.tools import list_ports
 
 import pclink_protocol as proto
 from pclink_link import PCLinkConnection, PCLinkError, PCLinkTimeout
@@ -230,6 +229,7 @@ def main(argv=None) -> int:
         return 1
     except serial.SerialException as exc:
         out(f"Couldn't open {args.port}: {exc}")
+        from serial.tools import list_ports  # here, so tests can stub pyserial
         ports = ", ".join(p.device for p in list_ports.comports()) or "none found"
         out(f"Available ports: {ports}")
         return 1

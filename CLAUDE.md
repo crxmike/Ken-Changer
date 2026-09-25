@@ -47,6 +47,11 @@ v1.12.2: writing an empty program (clearing it) is confirmed.
 v1.12.3: the artist-name text type isn't supported (real hardware);
 a frame answered with EOT now raises `PCLinkRejected` (not yet seen in
 the app).
+v1.12.4: a CD-Text disc (format `0x90`) in the drive answers name reads
+with an endless `LongTextData` stream (real hardware); the link's
+handling of it is confirmed (v1.12.6). v1.12.7: Next Track on that disc
+sends the changer to the next disc and replaces its PC-written names
+with its CD-Text (two logged cases; trigger details open).
 
 ## Files
 
@@ -65,6 +70,13 @@ the app).
   text type (info_type 0x02). Run on real hardware in v1.12.3: not
   supported. Tests: `test_probe_artist_name.py`.
 - `test_write_feature.py` -- tests for the in-progress write feature.
+- `test_cdtext_stream.py` -- tests for the CD-Text `LongTextData`
+  stream handling (v1.12.4).
+- `probe_cdtext_stream.py` -- standalone, read-only experiment: lets a
+  CD-Text disc's `LongTextData` stream run (up to `--window` seconds)
+  and reports how it goes on. Run on hardware in v1.12.8: an endless
+  loop of empty frames, `seq` 1-70. Tests:
+  `test_probe_cdtext_stream.py`.
 - `test_genre_feature.py` -- tests for the genre read/write feature
   (v1.4.0).
 - `test_mode_feature.py` -- tests for the Play Mode selector

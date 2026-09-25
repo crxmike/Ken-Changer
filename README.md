@@ -300,6 +300,17 @@ testing, so treat them as the manufacturer's claims until confirmed:
 - **The front-panel menu lists 26 music types** (p. 31), while
   `proto.GENRES` has 29 codes: it adds Unassigned, Unknown and Erotic,
   which the manual's list leaves out.
+- **CD-Text discs** (pp. 18, 28-29, 31, and "Complete CD-Text Info"):
+  titles can be registered only "for discs not corresponding to
+  CD-TEXT"; for a CD-Text disc "a new title can not be registered" from
+  the front panel. "The entered title and the CD-TEXT title information
+  are memorized", so the changer stores a CD-Text disc's own titles.
+  ALL DATA READ reads each disc's CD-Text into the player ("D001: CD
+  TEXT", or "NO CD TEXT" for other discs), and a CD-Text genre code is
+  registered as the disc's music type. It may explain why slot 4's
+  stored names turned into its CD-Text titles (suspected, see "Honest
+  gaps" #23). The manual doesn't say when, besides ALL DATA
+  READ, the changer reads CD-Text into memory.
 - **ALL DATA READ** (p. 18) is under the remote's MODE menu. **Resetting
   all registered data** (titles, music types, user files, Best
   Selection; p. 41) means holding Stop while plugging the power back in.
@@ -346,6 +357,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
 - `library_browser.py` -- the Library tab's search, filters, sorting and
   scan cache (no serial or Tkinter dependency; tested in
   `test_library_browser.py`).
+- `test_cdtext_stream.py` -- the endless `LongTextData` stream from a
+  CD-Text disc in the drive, and what the link and app do about it
+  (v1.12.4; see "Honest gaps" #23).
 
 ## Protocol summary (for reference)
 
@@ -858,6 +872,61 @@ exactly what's happening):
      EOT instead of ACK was taken for an ACK, so a refused write looked
      successful. It now raises `PCLinkRejected`, and the app logs the
      write as an error.
+23. **A CD-Text disc's names can't be read while it's in the drive
+   (v1.12.4, real hardware).** Slot 4 (DiscInfo format `0x90`; its front
+   panel shows the disc's own CD-Text titles, e.g. "Silent Night", not the
+   stored "Name 1") answers every name read with an endless run of
+   `LongTextData` frames: track 0, text `0x01`, and a byte after the
+   format counting up (01 ... 0x28 before the app stopped listening). With
+   another disc in the drive, the same read returns the stored names as
+   ordinary `TextData`. Writes work either way: all 11 names written with
+   slot 4 in the drive read back exactly (the changer keeps its own format
+   byte, `0x90`, though we send `0x00`).
+   - Since v1.12.4 the link spots the stream after 5 frames, cuts it off
+     without ACKing any more of it, and reports the read as failed ("play
+     another disc, then read it again"). **CONFIRMED on real hardware
+     (v1.12.5):** the changer re-sends its last frame 5 times, 2s apart,
+     then sends EOT, which we ACK, and the link is clean again. It costs
+     about 13s (3s before the stream starts, 10s to end it). The app no
+     longer stores the stream's `0x01` as "no name", and "Rescan Disc"
+     keeps the saved value of anything it couldn't read (confirmed for
+     the disc name).
+   - Fixed in v1.12.5: a read's
+     5-second timeout no longer runs out during that 10s cut-off (which
+     made the app retry and start the stream again), a track-name read
+     that got no reply no longer saves an empty track list, and the
+     track-name read is skipped after the disc name streams. **All three
+     CONFIRMED on real hardware (v1.12.6).**
+   - **Full CD-Text track names can be read while the disc is in the
+     drive (v1.12.9, real hardware):** put the track number in
+     `DataAccess`'s "unknown" byte (the one after the slot) and the
+     changer answers with one `LongTextData` frame holding that track's
+     CD-Text title, not cut to 25 characters ("We Wish You A Merry
+     Christmas"), then EOT. Past the last track: no frame. With another
+     disc in the drive the same request gets the stored copy as
+     `TextData` (25 characters), and on a non-CD-Text disc it gets that
+     one track's stored name. `0` in that byte means "all tracks" (what
+     the app always sends); on a CD-Text disc in the drive with no disc
+     title (front panel "----") that's when the stream happens.
+   - **The stream never carries text and never ends (v1.12.8, real
+     hardware, `probe_cdtext_stream.py`):** let run for 60s, playing or
+     stopped, it's a loop of `seq` 1-70 (70 empty frames, then ~1.75s of
+     silence, repeat), always track 0 and text `0x01`. The disc's
+     CD-Text titles can only be read from the changer's stored copy,
+     with another disc in the drive.
+   - **Next Track on the CD-Text disc replaces its stored names with its
+     CD-Text** (v1.12.7, real hardware, two logged cases). Names written
+     from the PC survive reloads and play. But Next Track while slot 4
+     played sent the changer to the next disc (slot 1) instead of track
+     2, and afterwards slot 4's track names were its CD-Text titles and
+     its disc name was empty (genre and userfiles kept). The user found the
+     skip happens only when moving to track 2, and puts it down to damage
+     on the disc; other tracks skip normally. So the likely story: the
+     changer fails to read track 2, gives up on the disc, and re-registers
+     its CD-Text on the way. Unconfirmed. The manual says titles can't be registered
+     for CD-Text discs (see "Owner's manual notes"). Unknown too: whether the stream ever
+     ends by itself, and what `0x90` means (empty slots 100-102 report it
+     as well).
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

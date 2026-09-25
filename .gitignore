@@ -11,3 +11,6 @@ library_cache.json.tmp
 
 # probe_artist_name.py output (raw-byte logs from the artist-name experiment)
 probe_artist_*.log
+
+# Raw logs written by the probe_*.py experiments
+probe_*.log

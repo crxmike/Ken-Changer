@@ -123,6 +123,19 @@ REPLY_WINDOW_BY_COMMAND = {
     proto.CMD_CHANGE_MODE: 0.0,
 }
 
+# The endless LongTextData stream (see PCLinkTextStream): this many
+# placeholder frames in a row for the same slot/track/info_type and it's
+# treated as the stream. No real title has come back as LongTextData yet,
+# and the stored-names reply for a whole disc is TextData, so 5 is plenty.
+TEXT_STREAM_FRAMES = 5
+# After cutting the stream off, bytes are discarded until the line has
+# been quiet this long (or the changer closes with its own EOT). In the
+# v1.12.4 hardware test (14:59) the changer re-sent the frame we didn't ACK
+# every 2s (5 times), then sent EOT, which we ACK'd: 10s in all, ended by
+# the EOT. Quiet is a fallback in case the EOT never comes.
+T_STREAM_QUIET = 2.5
+T_STREAM_RESYNC_MAX = 15.0
+
 # Per-byte poll timeout used for the read loop. This is also the practical
 # floor on how quickly a "give up waiting" deadline (like the reply windows
 # above) actually takes effect, since a single blocking ser.read(1) call
@@ -156,6 +169,27 @@ class PCLinkRejected(PCLinkError):
     pass
 
 
+class PCLinkTextStream(PCLinkError):
+    """A name read was answered with an endless run of placeholder
+    LongTextData frames, so no names were read. Seen on a real CD-425M
+    (v1.12.4) for a disc whose front panel shows CD-Text titles, whenever
+    that disc was in the drive: every frame is the same slot and track 0
+    with text 0x01, only the `seq` byte counting up (01 ... 0x28 in the
+    ~1 second before the reply window closed). Read while another disc is
+    in the drive, the same slot's stored names come back as ordinary
+    TextData. The link cuts the stream off (see _cut_off_text_stream)."""
+    pass
+
+
+class _EndlessTextStream(Exception):
+    """Internal: _drain_replies spotted the stream PCLinkTextStream
+    describes. Carries the last frame's payload for the error message."""
+
+    def __init__(self, payload: dict):
+        super().__init__("endless LongTextData stream")
+        self.payload = payload
+
+
 class PCLinkWriteUnconfirmed(PCLinkError):
     """Raised by send_write() when the write's outcome can't be confirmed
     -- currently: the changer never replied with ReadyForData to the
@@ -168,10 +202,22 @@ class PCLinkWriteUnconfirmed(PCLinkError):
 
 
 class _SendRequest:
-    def __init__(self, command: int, data: bytes):
+    def __init__(self, command: int, data: bytes, reply_window: Optional[float] = None,
+                 let_stream_run: bool = False):
         self.command = command
         self.data = data
+        # Overrides REPLY_WINDOW_BY_COMMAND for this request (None: use it).
+        self.reply_window = reply_window
+        # For probes (probe_cdtext_stream.py): don't cut the LongTextData
+        # stream off after TEXT_STREAM_FRAMES; ACK every frame until the
+        # changer closes or the reply window ends, then cut it off.
+        self.let_stream_run = let_stream_run
         self.done = threading.Event()
+        # Set by the IO thread when it starts this request's transaction;
+        # `cancelled` by the caller if it gave up before that (see
+        # _wait_done), so a request nobody waits for any more never runs.
+        self.started = threading.Event()
+        self.cancelled = False
         self.error: Optional[Exception] = None
         # Set by _do_send after the transaction completes: True if a
         # ReadyForData frame was seen in the reply -- see send_write().
@@ -226,12 +272,15 @@ class PCLinkConnection:
 
     # -- sending -------------------------------------------------------
 
-    def send(self, command: int, data: bytes = b"", timeout: float = 5.0) -> None:
+    def send(self, command: int, data: bytes = b"", timeout: float = 5.0,
+             reply_window: Optional[float] = None, let_stream_run: bool = False) -> None:
         """Queue a frame to be sent on the IO thread and block until the
-        send/ack/eot handshake for it has completed (or raise on error)."""
-        req = _SendRequest(command, data)
+        send/ack/eot handshake for it has completed (or raise on error).
+        `reply_window` and `let_stream_run` are for probes; see
+        _SendRequest."""
+        req = _SendRequest(command, data, reply_window, let_stream_run)
         self._out_q.put(req)
-        if not req.done.wait(timeout):
+        if not self._wait_done(req, timeout):
             raise PCLinkTimeout(
                 f"Timed out waiting to send {proto.COMMAND_NAMES.get(command, command)}"
             )
@@ -273,7 +322,7 @@ class PCLinkConnection:
         """
         req = _SendRequest(command, data)
         self._out_q.put(req)
-        if not req.done.wait(timeout):
+        if not self._wait_done(req, timeout):
             raise PCLinkTimeout(
                 f"Timed out waiting to send "
                 f"{proto.COMMAND_NAMES.get(command, command)} (write)"
@@ -289,6 +338,30 @@ class PCLinkConnection:
         # A SEPARATE transaction for the actual payload -- see this
         # method's docstring / the module docstring for why.
         self.send(follow_up_command, follow_up_data, timeout=timeout)
+
+    @staticmethod
+    def _wait_done(req: _SendRequest, timeout: float) -> bool:
+        """Wait for `req` to finish. `timeout` covers the wait for the IO
+        thread to START it (queued behind other traffic, or its ENQ
+        colliding). Once it has started, wait for it to finish: a started
+        transaction always ends, bounded by the T_ACK waits, the reply
+        window and T_STREAM_RESYNC_MAX. v1.12.5: a flat 5s used to cover
+        both, and the 10s stream cut-off seen on real hardware (v1.12.4
+        test, 14:59) outlasted it -- the caller saw a timeout, retried, and
+        the retry started the stream again. A request that never started is
+        cancelled, so it can't run later behind the caller's retry."""
+        if req.done.wait(timeout):
+            return True
+        # Every step of a started transaction has its own limit; this is a
+        # safety net above their sum.
+        limit = (req.reply_window or 0.0) + T_STREAM_RESYNC_MAX + T_ACK * 3 + 60.0
+        if req.started.is_set():
+            return req.done.wait(limit)
+        req.cancelled = True
+        # The IO thread may have picked it up just now.
+        if req.started.is_set():
+            return req.done.wait(limit)
+        return False
 
     # -- internals -------------------------------------------------------
 
@@ -346,9 +419,17 @@ class PCLinkConnection:
                 time.sleep(0.1)
 
     def _try_send_pending(self) -> None:
-        try:
-            req = self._out_q.get_nowait()
-        except queue.Empty:
+        while True:
+            try:
+                req = self._out_q.get_nowait()
+            except queue.Empty:
+                return
+            if not req.cancelled:
+                break
+        req.started.set()
+        if req.cancelled:  # gave up between the check and started.set()
+            req.error = PCLinkTimeout("Gave up waiting before it was sent")
+            req.done.set()
             return
         self._do_send(req)
 
@@ -384,13 +465,25 @@ class PCLinkConnection:
             # bare STX + payload -- no fresh ENQ -- confirmed against real
             # hardware (a CD-425M's handshake reply arrives exactly this
             # way). Drain zero or more such frames.
-            reply_window = REPLY_WINDOW_BY_COMMAND.get(req.command, REPLY_WINDOW_DEFAULT)
+            reply_window = req.reply_window
+            if reply_window is None:
+                reply_window = REPLY_WINDOW_BY_COMMAND.get(req.command, REPLY_WINDOW_DEFAULT)
             # Always allow at least one real poll (T_BYTE long), even for a
             # nominal 0.0s window -- otherwise a byte that's already sitting
             # in the OS's receive buffer could be missed entirely rather
             # than just "not waited for".
             deadline = time.monotonic() + max(reply_window, T_BYTE)
-            changer_closed, saw_ready_for_data = self._drain_replies(deadline=deadline)
+            try:
+                changer_closed, saw_ready_for_data = self._drain_replies(
+                    deadline=deadline, stream_detect=not req.let_stream_run)
+            except _EndlessTextStream as stream:
+                self._cut_off_text_stream()
+                p = stream.payload
+                raise PCLinkTextStream(
+                    f"slot {p.get('slot')} answered with an endless run of empty "
+                    f"LongTextData frames, so no names were read. Seen when that disc "
+                    f"is in the drive: play another disc, then read it again"
+                )
             req.saw_ready_for_data = saw_ready_for_data
 
             # 5. WE close the transaction: confirmed against real hardware
@@ -399,7 +492,10 @@ class PCLinkConnection:
             # gets an EOT from us -- it does not close the transaction on
             # its own. So unless the changer already sent its own EOT
             # during the drain above, we send one now.
-            if not changer_closed:
+            if not changer_closed and req.let_stream_run:
+                # Most likely a stream still running: end it cleanly.
+                self._cut_off_text_stream()
+            elif not changer_closed:
                 self._write(bytes([proto.EOT]), "EOT (closing transaction)")
                 if not self._wait_for(proto.ACK, T_EOT_ACK):
                     # Not fatal: our request frame was already ACK'd, so the
@@ -427,12 +523,73 @@ class PCLinkConnection:
         control, IT sends the closing EOT and we just ACK it."""
         self._emit_raw("RX", bytes([proto.ENQ]), "ENQ (changer wants to send)")
         self._write(bytes([proto.ACK]), "ACK (ready to receive)")
-        self._drain_replies(deadline=time.monotonic() + T_ACK, require_eot_from_peer=True)
+        try:
+            self._drain_replies(deadline=time.monotonic() + T_ACK, require_eot_from_peer=True)
+        except _EndlessTextStream:
+            # Not seen: the stream has only ever answered our own reads.
+            self._cut_off_text_stream()
+
+    def _cut_off_text_stream(self) -> None:
+        """End the endless LongTextData stream (see PCLinkTextStream) and
+        wait for the line to settle before the next request.
+
+        What the logs show happens without this: our closing EOT goes out
+        mid-stream, the changer starts its next frame anyway, then re-sends
+        that frame while it waits for an ACK that never comes, then sends
+        EOT about every 2s (3 times) before going quiet -- 8-10 seconds in
+        all, during which every queued request's ENQ got stream bytes
+        instead of an ACK and failed.
+
+        So: send our EOT, then read and discard everything (never ACKing a
+        frame, so the stream can't continue), until the line is quiet for
+        T_STREAM_QUIET. An EOT from the changer is ACK'd and ends the wait,
+        as for any EOT.
+
+        Seen on real hardware (v1.12.4 test, 14:59:14-24): the changer
+        re-sent the frame we didn't ACK 5 times, 2s apart, then sent EOT;
+        we ACK'd it and the very next ENQ got an ACK. So this ends the
+        stream cleanly, but it still takes about 10s."""
+        self._write(bytes([proto.EOT]), "EOT (cutting off endless LongTextData stream)")
+        start = last = time.monotonic()
+        while True:
+            now = time.monotonic()
+            if now - last >= T_STREAM_QUIET or now - start >= T_STREAM_RESYNC_MAX:
+                self._emit_raw("RX", b"", "(line quiet, stream over)")
+                return
+            b = self._wait_read_byte(T_BYTE)
+            if b is None:
+                continue
+            if b == proto.STX:
+                # A re-sent frame. Read all of it without ACKing, so a data
+                # byte of 0x04 (slot 4!) isn't taken for an EOT.
+                raw = bytearray([b])
+                header = [self._wait_read_byte(T_ACK) for _ in range(3)]
+                if None not in header:
+                    raw += bytes(header)
+                    for _ in range((header[1] | (header[2] << 8)) + 1):  # data + checksum
+                        byte = self._wait_read_byte(T_ACK)
+                        if byte is None:
+                            break
+                        raw.append(byte)
+                self._emit_raw("RX", bytes(raw), "(discarded, not ACK'd: cut-off stream frame)")
+                last = time.monotonic()
+                continue
+            last = time.monotonic()
+            if b == proto.ENQ:
+                # The changer has moved on to a fresh transaction (an event).
+                self._handle_incoming_transaction()
+                return
+            if b == proto.EOT:
+                self._emit_raw("RX", bytes([b]), "EOT (changer ending the stream)")
+                self._write(bytes([proto.ACK]), "ACK (transaction complete)")
+                return
+            self._emit_raw("RX", bytes([b]), "(discarded: rest of the cut-off stream)")
 
     def _drain_replies(
         self,
         deadline: float,
         require_eot_from_peer: bool = False,
+        stream_detect: bool = True,
     ) -> tuple[bool, bool]:
         """Read zero or more messages -- either a bare STX (an inline reply
         riding within our own transaction, e.g. Handshake's identifier) or
@@ -468,6 +625,7 @@ class PCLinkConnection:
         what it saw, and send_write() decides what to do about it.
         """
         saw_ready_for_data = False
+        stream = {"key": None, "count": 0}
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -495,6 +653,8 @@ class PCLinkConnection:
                         self._emit_frame(frame)
                         if frame.command == proto.CMD_READY_FOR_DATA:
                             saw_ready_for_data = True
+                        if stream_detect:
+                            self._note_text_stream(frame, stream)
                 else:
                     self._emit_raw(
                         "RX", bytes([stx]) if stx is not None else b"",
@@ -507,6 +667,8 @@ class PCLinkConnection:
                     self._emit_frame(frame)
                     if frame.command == proto.CMD_READY_FOR_DATA:
                         saw_ready_for_data = True
+                    if stream_detect:
+                        self._note_text_stream(frame, stream)
                 continue  # more reply frames, or EOT, may follow
             if b == proto.EOT:
                 self._emit_raw("RX", bytes([b]), "EOT")
@@ -517,6 +679,22 @@ class PCLinkConnection:
             # it and keep listening rather than aborting the drain.
             self._emit_raw("RX", bytes([b]), "(ignored while draining, likely a retry)")
             continue
+
+    @staticmethod
+    def _note_text_stream(frame: Frame, stream: dict) -> None:
+        """Raise _EndlessTextStream once TEXT_STREAM_FRAMES placeholder
+        LongTextData frames in a row share a slot/track/info_type (see
+        PCLinkTextStream). `stream` is the drain's running count."""
+        p = frame.payload or {}
+        if frame.command != proto.CMD_LONG_TEXT_DATA or not proto.is_placeholder_text(
+                p.get("text", "")):
+            stream["key"], stream["count"] = None, 0
+            return
+        key = (p.get("slot"), p.get("track"), p.get("info_type"))
+        stream["count"] = stream["count"] + 1 if key == stream["key"] else 1
+        stream["key"] = key
+        if stream["count"] >= TEXT_STREAM_FRAMES:
+            raise _EndlessTextStream(p)
 
     def _read_and_ack_frame(self) -> Optional[Frame]:
         """Assumes STX has just been read. Reads command + length + data +

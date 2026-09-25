@@ -191,7 +191,10 @@ GENRE_NAME_TO_CODE = {name: code for code, name in GENRES.items()}
 
 class Format:
     NO_CDTEXT = 0x00
-    HAS_CDTEXT = 0x13
+    HAS_CDTEXT = 0x13  # per the docs; never seen on the real CD-425M
+    # 0x90 is seen on real hardware (v1.12.4) on a disc whose front-panel
+    # display shows CD-Text titles, and on some empty slots (v1.7.1).
+    # Whether it means "CD-Text" is a guess, so it stays "Unknown (0x90)".
 
 
 def format_name(value: int) -> str:
@@ -802,14 +805,23 @@ def decode_text_data(data: bytes) -> dict:
 
 
 def decode_long_text_data(data: bytes) -> dict:
-    slot, track, _u1, info_type, _u2, fmt, _u3 = struct.unpack("<HBBBBBB", data[:8])
+    """cd_longtextdata.html leaves three bytes "unknown". Seen on real
+    hardware (v1.12.4, a CD-Text disc read while it was in the drive:
+    `04 00 | 00 | 00 | 01 | 0b | 90 | NN | 01`): the first two sit where
+    TextData has userfiles and genre, and hold the disc's values (0x00,
+    Folk); the third counted up 01, 02, ... with every frame, so it's
+    decoded as `seq`. What `seq` means beyond that is unknown."""
+    slot, track, userfiles, info_type, genre, fmt, seq = struct.unpack("<HBBBBBB", data[:8])
     text = _read_cstr(data, 8)
     return {
         "slot": slot,
         "track": track,
+        "userfiles": userfiles,
         "info_type": info_type,
+        "genre": genre,
         "format": fmt,
         "format_name": format_name(fmt),
+        "seq": seq,
         "text": text,
     }
 

@@ -110,6 +110,25 @@ gaps" #21.
 
 ## In progress / next up
 
+- **A CD-Text disc in the drive answers name reads with an endless
+  `LongTextData` stream (v1.12.4, real hardware).** Slot 4, format
+  `0x90`; its front panel shows the disc's own CD-Text. Read with another
+  disc in the drive, its stored names come back fine, and writes work
+  either way. The app's handling of the stream is **confirmed**
+  (v1.12.5/v1.12.6: one stream per read, cut off, the track-name read
+  skipped, saved names kept). **Found (v1.12.7, two logged cases):**
+  Next Track while slot 4 plays sends the changer to the next disc, and
+  slot 4's stored names are replaced by its CD-Text (disc name emptied).
+  Open: whether a natural track change or the remote does the same;
+  then whether the app should warn before writing names to a `0x90`
+  disc. The stream itself is settled (v1.12.8,
+  `probe_cdtext_stream.py`): it never ends and never carries text. It's
+  what asking for "track 0" (the disc title, which this disc lacks) gets.
+  **v1.12.9 (confirmed):** `DataAccess`'s "unknown" byte is a track
+  number; with it, the disc in the drive returns each track's full
+  CD-Text title. Next: try the byte on a non-CD-Text disc and on the
+  CD-Text disc out of the drive, then use it in the app. See README "Honest gaps" #23.
+
 - **Artist name (info_type 0x02): not supported (v1.12.3, real
   hardware).** A read gets no reply, and a write's payload is refused
   with EOT. gnudb results stay "Artist / Album" in the disc name. Only

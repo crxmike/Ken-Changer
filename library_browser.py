@@ -59,6 +59,23 @@ def replace_disc(raw_library: dict, record: dict | None, slot: int) -> dict:
     return dict(raw_library, discs=sorted(discs, key=lambda d: d["slot"]))
 
 
+RESCAN_FIELDS = ("name", "tracks", "genre", "userfiles")
+
+
+def keep_unread_fields(raw_library: dict, record: dict) -> tuple[dict, list[str]]:
+    """A rescanned disc record with any field that couldn't be read (None)
+    taken from the saved scan's record for the same slot instead, plus the
+    names of the fields kept. Before v1.12.4 a failed read replaced the
+    saved values with nothing: a CD-Text disc read while in the drive (see
+    pclink_link.PCLinkTextStream) was saved with no name, tracks, genre or
+    userfiles, on real hardware, twice."""
+    old = next((d for d in raw_library["discs"] if d["slot"] == record["slot"]), None)
+    if old is None:
+        return record, []
+    kept = [f for f in RESCAN_FIELDS if record.get(f) is None and old.get(f) is not None]
+    return dict(record, **{f: old[f] for f in kept}), kept
+
+
 # -- Adding a disc to a userfile (v1.12.0) --------------------------------
 
 def userfile_change(slot: int, scanned_name: str | None, state: dict, number: int,
