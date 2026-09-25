@@ -177,7 +177,10 @@ class PCLinkTextStream(PCLinkError):
     with text 0x01, only the `seq` byte counting up (01 ... 0x28 in the
     ~1 second before the reply window closed). Read while another disc is
     in the drive, the same slot's stored names come back as ordinary
-    TextData. The link cuts the stream off (see _cut_off_text_stream)."""
+    TextData. The link cuts the stream off (see _cut_off_text_stream).
+    v1.12.9: it's what "track 0" (the disc title, or "all tracks") gets
+    when the CD-Text disc has no disc title; asking for track N instead
+    returns that track's CD-Text title (see encode_data_access)."""
     pass
 
 
@@ -480,9 +483,9 @@ class PCLinkConnection:
                 self._cut_off_text_stream()
                 p = stream.payload
                 raise PCLinkTextStream(
-                    f"slot {p.get('slot')} answered with an endless run of empty "
-                    f"LongTextData frames, so no names were read. Seen when that disc "
-                    f"is in the drive: play another disc, then read it again"
+                    f"slot {p.get('slot')} answered track {p.get('track')} with an endless "
+                    f"run of empty LongTextData frames: a CD-Text disc in the drive, asked "
+                    f"for text it doesn't have (e.g. a disc title)"
                 )
             req.saw_ready_for_data = saw_ready_for_data
 

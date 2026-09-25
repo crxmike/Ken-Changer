@@ -226,7 +226,7 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # on the CD-425M (probe_artist_name.py, real hardware). pclink_link.py now
 # raises PCLinkRejected when the changer answers a frame with EOT instead
 # of ACK; before, a refused write was logged as done.
-APP_VERSION = "1.12.9"
+APP_VERSION = "1.12.10"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1856,18 +1856,8 @@ class App(tk.Tk):
         if link is None:
             return
 
-        def work():
-            if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot,
-                                   proto.InfoType.DISC_NAMES, "disc name"):
-                self._log(f"TX DataAccess(DiscName, slot={slot}) [auto] - sent ok")
-            if slot in self._text_stream_slots:
-                self._log(f"Skipping slot {slot}'s track names: they'd stream the same way.")
-                return
-            if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot,
-                                   proto.InfoType.TRACK_NAMES, "track names"):
-                self._log(f"TX DataAccess(TrackNames, slot={slot}) [auto] - sent ok")
-
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=self._read_names_sync, args=(link, slot, " [auto]"),
+                         daemon=True).start()
 
     # ------------------------------------------------------------------
     # Table of Contents / DiscID
@@ -2512,13 +2502,13 @@ class App(tk.Tk):
             self._retrieve_sync(link, data_type, slot, info_type, item)
 
     def _retrieve_sync(self, link: PCLinkConnection, data_type: int, slot: int,
-                       info_type: int = 0, what: str = "data") -> bool:
+                       info_type: int = 0, what: str = "data", track: int = 0) -> bool:
         """Background thread: one blocking RETRIEVE_DATA request, retrying a
         timeout twice (likely a bus collision, see _send_bg). Replies are
         cached by _on_frame before this returns. False if it never went
-        through."""
+        through. `track` 0 = all tracks (see encode_data_access)."""
         data = proto.encode_data_access(proto.Action.RETRIEVE_DATA, data_type,
-                                        slot=slot, info_type=info_type)
+                                        slot=slot, info_type=info_type, track=track)
         self._text_stream_slots.discard(slot)
         for attempt in range(3):
             try:
@@ -2535,6 +2525,60 @@ class App(tk.Tk):
                 return False
         self._log(f"Reading slot {slot}'s {what} timed out.")
         return False
+
+    def _read_track_names_sync(self, link: PCLinkConnection, slot: int) -> bool:
+        """Background thread: read a slot's track names into the cache.
+        The usual one-request read (track 0 = all) first -- unless the disc
+        name read just streamed -- and, if that streams, one request per
+        track instead (v1.12.10). A CD-Text disc in the drive with no
+        CD-Text disc title streams on "all", but answers each track with
+        its full CD-Text title (CONFIRMED v1.12.9). False if the names
+        couldn't be read."""
+        if slot not in self._text_stream_slots:
+            if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot,
+                                   proto.InfoType.TRACK_NAMES, "track names"):
+                return True
+            if slot not in self._text_stream_slots:
+                return False
+        return self._read_tracks_one_by_one_sync(link, slot)
+
+    def _read_tracks_one_by_one_sync(self, link: PCLinkConnection, slot: int) -> bool:
+        """Background thread: one TrackNames request per track (the track in
+        DataAccess's track byte), tracks 1..N with N from DiscInfo. With no
+        known count, stops at the first track that gets no name (past the
+        last track, the changer sends no frame -- CONFIRMED v1.12.9)."""
+        count = library_backup.known_track_count(self._disc_track_count.get(slot))
+        if not count:
+            self._retrieve_sync(link, proto.DataType.DISC_INFO, slot, what="disc info")
+            count = library_backup.known_track_count(self._disc_track_count.get(slot))
+        self._log(f"Slot {slot}: reading track names one track at a time "
+                  f"({count or 'unknown number of'} tracks)...")
+        self._track_name_cache[slot] = {}
+        for n in range(1, (count or 99) + 1):
+            if not self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot,
+                                       proto.InfoType.TRACK_NAMES, f"track {n}'s name", track=n):
+                return False
+            if not count and n not in self._track_name_cache.get(slot, {}):
+                break
+        self._update_name_labels()
+        if slot == self._current_slot:
+            self._refresh_disc_data_from_changer()
+        return True
+
+    def _read_names_sync(self, link: PCLinkConnection, slot: int, label: str = "") -> None:
+        """Background thread: disc name, then track names (see
+        _read_track_names_sync). A disc-name read that streams means a
+        CD-Text disc in the drive with no CD-Text disc title (the front
+        panel shows "----"), so the disc name is shown as empty."""
+        if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot,
+                               proto.InfoType.DISC_NAMES, "disc name"):
+            self._log(f"TX DataAccess(DiscName, slot={slot}){label} - sent ok")
+        elif slot in self._text_stream_slots:
+            self._log(f"Slot {slot} is a CD-Text disc in the drive with no CD-Text disc title.")
+            self._disc_name_cache[slot] = ""
+            self._update_name_labels()
+        if self._read_track_names_sync(link, slot):
+            self._log(f"TX DataAccess(TrackNames, slot={slot}){label} - sent ok")
 
     def _write_to_changer_worker(self, link: PCLinkConnection, slot: int, items: list,
                                  userfiles: int = 0, on_done=None):
@@ -2573,22 +2617,7 @@ class App(tk.Tk):
             # Re-read from the changer so column 1 (and the Genre row)
             # reflect what was actually written, rather than trusting the
             # write locally.
-            self._send_bg(
-                proto.CMD_DATA_ACCESS,
-                proto.encode_data_access(
-                    proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA, slot=slot,
-                    info_type=proto.InfoType.DISC_NAMES,
-                ),
-                f"DataAccess(DiscName, slot={slot})",
-            )
-            self._send_bg(
-                proto.CMD_DATA_ACCESS,
-                proto.encode_data_access(
-                    proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA, slot=slot,
-                    info_type=proto.InfoType.TRACK_NAMES,
-                ),
-                f"DataAccess(TrackNames, slot={slot})",
-            )
+            self._read_names_sync(link, slot)
             if wrote_genre:
                 self._send_bg(
                     proto.CMD_DATA_ACCESS,
@@ -2851,16 +2880,17 @@ class App(tk.Tk):
         self._fetch_toc_for_slot(self._current_slot, label_suffix="")
 
     def _get_track_names(self):
+        link = self._require_link()
+        if link is None:
+            return
         slot = self.slot_var.get()
         self._note_query_slot(slot)
-        self._send_bg(
-            proto.CMD_DATA_ACCESS,
-            proto.encode_data_access(
-                proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA, slot=slot,
-                info_type=proto.InfoType.TRACK_NAMES,
-            ),
-            f"DataAccess(TrackNames, slot={slot})",
-        )
+
+        def work():
+            self._text_stream_slots.discard(slot)
+            if self._read_track_names_sync(link, slot):
+                self._log(f"TX DataAccess(TrackNames, slot={slot}) - sent ok")
+        threading.Thread(target=work, daemon=True).start()
 
     def _get_disc_name(self):
         slot = self.slot_var.get()
@@ -3367,10 +3397,7 @@ class App(tk.Tk):
         if self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot, proto.InfoType.DISC_NAMES,
                                "disc name"):
             state["name"] = self._disc_name_cache.get(slot)
-        if slot in self._text_stream_slots:
-            self._log(f"Skipping slot {slot}'s track names: they'd stream the same way.")
-        elif self._retrieve_sync(link, proto.DataType.TEXT_DATA, slot, proto.InfoType.TRACK_NAMES,
-                                 "track names"):
+        if self._read_track_names_sync(link, slot):
             # No TrackNames frame at all (the read closed with no reply)
             # means not read, not "no names": v1.12.4's hardware test
             # saved slot 4 with an empty track list that way.

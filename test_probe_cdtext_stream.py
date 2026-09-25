@@ -190,7 +190,7 @@ class TestStreamProbe(unittest.TestCase):
     def test_get_track_name_frame_matches_kenwoodv2(self):
         # KENWOODv2.pde's get_trackName for disc 1, track 1.
         data = proto.encode_data_access(proto.Action.RETRIEVE_DATA, proto.DataType.TEXT_DATA,
-                                        slot=1, info_type=proto.InfoType.TRACK_NAMES, unknown=1)
+                                        slot=1, info_type=proto.InfoType.TRACK_NAMES, track=1)
         self.assertEqual(proto.encode_frame(proto.CMD_DATA_ACCESS, data),
                          bytes([0x02, 0x03, 0x07, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01, 0x00, 0xF2]))
 

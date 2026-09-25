@@ -393,15 +393,20 @@ def encode_data_access(
     slot: int = 0,
     info_type: int = 0,
     genre: int = 0,
-    unknown: int = 0,
+    track: int = 0,
 ) -> bytes:
-    """action/data_type/slot/unknown/info_type/genre, per cd_dataaccess.html."""
+    """action/data_type/slot/track/info_type/genre. cd_dataaccess.html
+    calls the byte after the slot "unknown"; CONFIRMED on real hardware
+    (v1.12.9) that it's a track number for text reads: 0 = all tracks
+    (or the disc name, for info_type DISC_NAMES), N = just track N. A
+    CD-Text disc in the drive answers track N with its full CD-Text title
+    as LongTextData; see pclink_link.PCLinkTextStream."""
     return struct.pack(
         "<BBHBBB",
         action & 0xFF,
         data_type & 0xFF,
         slot & 0xFFFF,
-        unknown & 0xFF,
+        track & 0xFF,
         info_type & 0xFF,
         genre & 0xFF,
     )

@@ -126,8 +126,11 @@ gaps" #21.
   what asking for "track 0" (the disc title, which this disc lacks) gets.
   **v1.12.9 (confirmed):** `DataAccess`'s "unknown" byte is a track
   number; with it, the disc in the drive returns each track's full
-  CD-Text title. Next: try the byte on a non-CD-Text disc and on the
-  CD-Text disc out of the drive, then use it in the app. See README "Honest gaps" #23.
+  CD-Text title; with another disc in the drive it gives the stored
+  copy. **v1.12.10 (confirmed):** the app reads a streaming disc's track
+  names one track at a time, getting the full CD-Text titles, on connect
+  and on Rescan. Parked: not writing names to CD-Text discs (a Backup
+  restore would now write their full titles back, cut to 25). See README "Honest gaps" #23.
 
 - **Artist name (info_type 0x02): not supported (v1.12.3, real
   hardware).** A read gets no reply, and a write's payload is refused

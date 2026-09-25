@@ -286,10 +286,11 @@ class TestGenreWriteWorkerAttachesGenre(unittest.TestCase):
     def setUp(self):
         self.app = app_mod.App(library_cache_path=None)
         self.link = _FakeLink()
-        # Re-reads after a successful write happen via self._send_bg (its
-        # own background thread) -- irrelevant to what this test checks
-        # and racy to observe from the test thread, so stub it out.
+        # Re-reads after a successful write (names via _read_names_sync
+        # since v1.12.10, genre/userfiles via _send_bg) are irrelevant to
+        # what this test checks, so stub them out.
         self.app._send_bg = lambda *a, **kw: None
+        self.app._read_names_sync = lambda *a, **kw: None
 
     def tearDown(self):
         self.app.destroy()

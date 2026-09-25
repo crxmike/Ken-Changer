@@ -908,6 +908,11 @@ exactly what's happening):
      one track's stored name. `0` in that byte means "all tracks" (what
      the app always sends); on a CD-Text disc in the drive with no disc
      title (front panel "----") that's when the stream happens.
+   - **Since v1.12.10 the app uses this (CONFIRMED on real hardware):** if
+     a track-names read streams (or the disc-name read just did), it reads
+     the tracks one at a time instead, so a CD-Text disc in the drive shows
+     its full CD-Text titles. A streaming disc-name read is shown as "no
+     CD-Text disc title".
    - **The stream never carries text and never ends (v1.12.8, real
      hardware, `probe_cdtext_stream.py`):** let run for 60s, playing or
      stopped, it's a loop of `seq` 1-70 (70 empty frames, then ~1.75s of

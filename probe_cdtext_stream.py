@@ -88,7 +88,7 @@ class StreamProbe:
         # The user's own earlier program (KENWOODv2.pde) puts the current
         # track number there to read a CD-Text disc's track name.
         data = proto.encode_data_access(proto.Action.RETRIEVE_DATA, data_type,
-                                        slot=self.slot, info_type=info_type, unknown=track)
+                                        slot=self.slot, info_type=info_type, track=track)
         for attempt in range(3):
             self._frames.clear()
             self._notes.clear()

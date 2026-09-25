@@ -282,23 +282,39 @@ class TestSendWaitsForStartedTransaction(_LinkTestBase):
         self.assertEqual(self.fake.sent_bytes(), b"")  # no ENQ for the abandoned request
 
 
-class _FakeLink:
-    """Answers DataAccess reads the way slot 4 did at 14:59:12, with slot 4
-    in the drive: DiscInfo 10 tracks, then the stream for names."""
+# 16:35:19-16:35:21, slot 4 in the drive: each track's CD-Text title,
+# asked for with the track in DataAccess's track byte.
+CDTEXT_TITLES = {1: "Silent Night", 2: "O Holy Night", 3: "We Wish You A Merry Christmas",
+                 4: "Joy To The World", 5: "The First Noel", 6: "God Rest Ye Merry Gentlemen",
+                 7: "We Three Kings", 8: "Auld Lang Syne", 9: "O Come All Ye Faithful",
+                 10: "Hark! The Herald Angels Sing"}
 
-    def __init__(self, app, name_stream=True, track_frames=True):
+
+class _FakeLink:
+    """Answers DataAccess reads for slot 4. `in_drive` True: as at 16:35
+    (track 0 -- disc name, or all track names -- streams; track N gets its
+    full CD-Text title as LongTextData; past track 10, nothing). False: the
+    stored names, as at 14:58:29. `track_frames` False: the all-tracks read
+    gets no frame at all (14:59:28)."""
+
+    def __init__(self, app, in_drive=True, track_frames=True):
         self.app, self.requests = app, []
-        self.name_stream, self.track_frames = name_stream, track_frames
+        self.in_drive, self.track_frames = in_drive, track_frames
 
     def send(self, command, data, timeout=5.0):
-        data_type, info_type = data[1], data[5]  # see encode_data_access
-        self.requests.append((data_type, info_type))
+        data_type, track, info_type = data[1], data[4], data[5]  # see encode_data_access
+        self.requests.append((data_type, info_type, track))
         if data_type == proto.DataType.DISC_INFO:
             self.app._disc_track_count[4] = 10
         elif data_type == proto.DataType.TEXT_DATA:
-            if self.name_stream:
-                raise PCLinkTextStream("slot 4 streamed")
-            if info_type == proto.InfoType.DISC_NAMES:
+            if self.in_drive:
+                if track == 0:
+                    raise PCLinkTextStream("slot 4 streamed")
+                if track in CDTEXT_TITLES:
+                    payload = (bytes([0x04, 0x00, track, 0x00, info_type, 0x06, 0x90, 0x01])
+                               + CDTEXT_TITLES[track].encode("ascii"))
+                    pclink_app.App._cache_name(self.app, proto.decode_long_text_data(payload))
+            elif info_type == proto.InfoType.DISC_NAMES:
                 self.app._disc_name_cache[4] = "Title"
             elif self.track_frames:
                 self.app._track_name_cache[4] = {1: "Name 1"}
@@ -312,33 +328,84 @@ class TestSlotReadAfterStream(unittest.TestCase):
     def _app(self):
         app = types.SimpleNamespace(
             _disc_track_count={}, _disc_name_cache={}, _track_name_cache={},
-            _genre_cache={}, _userfiles_cache={}, _text_stream_slots=set(), logged=[])
+            _genre_cache={}, _userfiles_cache={}, _text_stream_slots=set(), logged=[],
+            _current_slot=4, _update_name_labels=lambda: None,
+            _refresh_disc_data_from_changer=lambda: None, _note_userfiles=lambda s, u: None)
         app._log = app.logged.append
-        app._retrieve_sync = lambda *a, **k: pclink_app.App._retrieve_sync(app, *a, **k)
+        for name in ("_retrieve_sync", "_read_track_names_sync", "_read_tracks_one_by_one_sync",
+                     "_read_names_sync"):
+            setattr(app, name, getattr(pclink_app.App, name).__get__(app))
         return app
 
-    def test_track_names_skipped_after_disc_name_streams(self):
+    def test_rescan_reads_tracks_one_by_one_after_disc_name_streams(self):
         app = self._app()
         link = _FakeLink(app)
         state = pclink_app.App._read_slot_state_sync(app, link, 4)
-        self.assertEqual((state["name"], state["tracks"]), (None, None))
+        self.assertIsNone(state["name"])  # not read: the saved name is kept
+        self.assertEqual(state["tracks"], CDTEXT_TITLES)
         self.assertEqual((state["genre"], state["userfiles"]), (0x0B, 0))
-        text_reads = [r for r in link.requests if r[0] == proto.DataType.TEXT_DATA]
-        self.assertEqual(text_reads, [(proto.DataType.TEXT_DATA, proto.InfoType.DISC_NAMES)])
+        text_reads = [(it, t) for dt, it, t in link.requests if dt == proto.DataType.TEXT_DATA]
+        # Disc name streams, so no all-tracks read, then tracks 1-10.
+        self.assertEqual(text_reads, [(proto.InfoType.DISC_NAMES, 0)]
+                         + [(proto.InfoType.TRACK_NAMES, n) for n in range(1, 11)])
+
+    def test_full_titles_not_cut_to_25(self):
+        app = self._app()
+        pclink_app.App._read_slot_state_sync(app, _FakeLink(app), 4)
+        self.assertEqual(app._track_name_cache[4][3], "We Wish You A Merry Christmas")
+
+    def test_unknown_track_count_stops_past_last_track(self):
+        app = self._app()
+        link = _FakeLink(app)
+        app._disc_track_count[4] = 99  # "not played since power-on"
+        link_send = link.send
+
+        def send(command, data, timeout=5.0):  # DiscInfo keeps saying 99
+            if data[1] == proto.DataType.DISC_INFO:
+                app._disc_track_count[4] = 99
+                return
+            link_send(command, data, timeout)
+        link.send = send
+        app._text_stream_slots.add(4)
+        self.assertTrue(pclink_app.App._read_track_names_sync(app, link, 4))
+        self.assertEqual(app._track_name_cache[4], CDTEXT_TITLES)
+        tracks_asked = [t for dt, it, t in link.requests if dt == proto.DataType.TEXT_DATA]
+        self.assertEqual(tracks_asked, list(range(1, 12)))  # 11 got nothing: stop
+
+    def test_all_tracks_read_that_streams_falls_back(self):
+        # Get Track Names on its own (no disc-name read first).
+        app = self._app()
+        link = _FakeLink(app)
+        app._disc_track_count[4] = 10
+        self.assertTrue(pclink_app.App._read_track_names_sync(app, link, 4))
+        tracks_asked = [t for dt, it, t in link.requests if dt == proto.DataType.TEXT_DATA]
+        self.assertEqual(tracks_asked, [0] + list(range(1, 11)))
+        self.assertEqual(app._track_name_cache[4], CDTEXT_TITLES)
+
+    def test_auto_fetch_shows_no_disc_title(self):
+        app = self._app()
+        app._disc_name_cache[4] = "stale"
+        pclink_app.App._read_names_sync(app, _FakeLink(app), 4, " [auto]")
+        self.assertEqual(app._disc_name_cache[4], "")
+        self.assertEqual(app._track_name_cache[4][10], "Hark! The Herald Angels Sing")
+        self.assertTrue(any("no CD-Text disc title" in l for l in app.logged))
 
     def test_track_read_with_no_frames_is_not_an_empty_list(self):
         # 14:59:28: TrackNames ACK'd, no frame in the reply window, our EOT.
         app = self._app()
         state = pclink_app.App._read_slot_state_sync(
-            app, _FakeLink(app, name_stream=False, track_frames=False), 4)
+            app, _FakeLink(app, in_drive=False, track_frames=False), 4)
         self.assertEqual(state["name"], "Title")
         self.assertIsNone(state["tracks"])
 
     def test_normal_read_unchanged(self):
-        # 14:58:29, slot 3 in the drive.
+        # 14:58:29, slot 3 in the drive: one all-tracks read, as before.
         app = self._app()
-        state = pclink_app.App._read_slot_state_sync(app, _FakeLink(app, name_stream=False), 4)
+        link = _FakeLink(app, in_drive=False)
+        state = pclink_app.App._read_slot_state_sync(app, link, 4)
         self.assertEqual((state["name"], state["tracks"]), ("Title", {1: "Name 1"}))
+        tracks_asked = [t for dt, it, t in link.requests if dt == proto.DataType.TEXT_DATA]
+        self.assertEqual(tracks_asked, [0, 0])
 
 
 if __name__ == "__main__":

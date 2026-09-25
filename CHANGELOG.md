@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.12.10 -- Full CD-Text track names for a CD-Text disc in the drive
+
+Uses v1.12.9's finding in the app. **CONFIRMED on the real CD-425M**
+(2026-09-25, raw-byte log, slot 4 playing):
+- Connecting (16:55:59): the disc-name read streamed and was cut off
+  (a StateEvent from the changer ended it at once), "Slot 4 is a CD-Text
+  disc in the drive with no CD-Text disc title.", then DiscInfo (10
+  tracks) and ten per-track reads, each one `LongTextData` frame with the
+  full title ("We Wish You A Merry Christmas", "God Rest Ye Merry
+  Gentlemen", "Hark! The Herald Angels Sing"), then EOT. About 8s in all,
+  ~0.35s per track.
+- Rescan (16:56:43): the same, then genre and userfiles; "its name
+  couldn't be read, so the saved values were kept". About 9s.
+
+Known gap: the Library/Backup now hold full CD-Text titles for such a
+disc, longer than the changer's 25-character stored names. A Backup
+restore of that disc would write them (cut to 25) as stored names, which
+the changer may later replace anyway (v1.12.7). Ties in with the parked
+idea of not writing to CD-Text discs.
+
+- `encode_data_access`'s `unknown` argument is now `track` (0 = all
+  tracks / the disc name, N = track N).
+- Track names are read through one routine, `_read_track_names_sync`:
+  the usual all-tracks read first, and if that streams, **one request per
+  track**, 1 to N (N from DiscInfo; with no known count, until a track
+  gets no reply, as past the last track). A CD-Text disc in the drive
+  answers each with its full CD-Text title as `LongTextData` (not cut to
+  25), which `_cache_name` already stores. Everything else still gets the
+  single all-tracks read.
+- If the disc-name read streams first, the all-tracks read (which would
+  stream too, ~5-13s) is skipped and it goes straight to per-track.
+- Used by the automatic fetch when a disc becomes current, Get Track
+  Names, the re-read after Write to Changer, and Rescan/Backup/Library
+  slot reads.
+- A disc-name read that streams now logs "Slot N is a CD-Text disc in
+  the drive with no CD-Text disc title." and shows the disc name as
+  empty (the front panel shows "----"). Rescan still keeps the saved
+  disc name in that case (it wasn't read), as in v1.12.4. The link's
+  error text says the same instead of "play another disc".
+- The trigger is the stream itself, not the `0x90` format byte: only one
+  CD-Text disc has been seen, empty slots report `0x90` too, and whether
+  a disc is in the drive isn't reliably known when a read starts. The
+  price is one stream and cut-off (~5-13s) per read of that disc.
+
+Tests: `TestSlotReadAfterStream` in `test_cdtext_stream.py` (7), with the
+16:35 log's titles; `test_genre_feature.py`'s write-worker test stubs the
+new re-read.
+
 ## v1.12.9 -- DataAccess's "unknown" byte is a track number: full CD-Text track names from the disc
 
 **The lead:** the user's own earlier program (`KENWOODv2.pde`, Processing)

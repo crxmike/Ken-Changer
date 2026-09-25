@@ -49,7 +49,9 @@ a frame answered with EOT now raises `PCLinkRejected` (not yet seen in
 the app).
 v1.12.4: a CD-Text disc (format `0x90`) in the drive answers name reads
 with an endless `LongTextData` stream (real hardware); the link's
-handling of it is confirmed (v1.12.6). v1.12.7: Next Track on that disc
+handling of it is confirmed (v1.12.6). v1.12.9: `DataAccess`'s "unknown" byte is a track number (confirmed);
+v1.12.10 uses it to read a CD-Text disc's full titles per track
+(confirmed). v1.12.7: Next Track on that disc
 sends the changer to the next disc and replaces its PC-written names
 with its CD-Text (two logged cases; trigger details open).
 
