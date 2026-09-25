@@ -842,6 +842,22 @@ exactly what's happening):
      Disc Map scan.
    Known limit: a disc with no name can't be added (same as the
    Userfiles & Program tab); name it on the Disc Data tab first.
+22. **No artist field on the CD-425M, as far as tested (v1.12.3, real
+   hardware).** `cd_types.html` lists TextData info_type `0x02` as
+   "artist name". `probe_artist_name.py` tried it on slot 1 (a
+   non-CD-Text disc with a user-entered name). Reading it got no reply
+   frame at all: ACK, then the changer's EOT. Writing it (with the disc's
+   genre and userfiles) got ReadyForData, but the changer refused the
+   TextData payload with EOT instead of ACK. Nothing changed: no artist
+   on re-read, and the disc name, genre and userfiles stayed the same.
+   So gnudb results still go in as "Artist / Album" in the 25-character
+   disc name. Untried: a disc with CD-Text (format `0x13`), in case the
+   changer reports an artist read from the disc itself.
+   - The same run showed a link-layer blind spot, fixed in v1.12.3 but
+     **not yet seen in the app on real hardware**: a frame answered with
+     EOT instead of ACK was taken for an ACK, so a refused write looked
+     successful. It now raises `PCLinkRejected`, and the app logs the
+     write as an error.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.

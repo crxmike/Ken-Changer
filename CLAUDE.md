@@ -44,6 +44,9 @@ reports 99 tracks for discs not played since power-on -- see CHANGELOG
 v1.10.1). v1.11.1: the Library tab (browse/search/play every disc) is
 confirmed too, and so is v1.12.0's userfile add/remove there (v1.12.1).
 v1.12.2: writing an empty program (clearing it) is confirmed.
+v1.12.3: the artist-name text type isn't supported (real hardware);
+a frame answered with EOT now raises `PCLinkRejected` (not yet seen in
+the app).
 
 ## Files
 
@@ -58,6 +61,9 @@ v1.12.2: writing an empty program (clearing it) is confirmed.
   planning (v1.10.0).
 - `library_browser.py` -- Library tab: search, filters, sorting and the
   last-scan cache, `library_cache.json` (v1.11.0).
+- `probe_artist_name.py` -- standalone experiment for the artist-name
+  text type (info_type 0x02). Run on real hardware in v1.12.3: not
+  supported. Tests: `test_probe_artist_name.py`.
 - `test_write_feature.py` -- tests for the in-progress write feature.
 - `test_genre_feature.py` -- tests for the genre read/write feature
   (v1.4.0).

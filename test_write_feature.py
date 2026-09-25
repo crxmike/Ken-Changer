@@ -64,7 +64,7 @@ if "serial" not in sys.modules:
 
 import pclink_protocol as proto
 import pclink_link as link_mod
-from pclink_link import PCLinkConnection, PCLinkNak, PCLinkTimeout, PCLinkWriteUnconfirmed
+from pclink_link import PCLinkConnection, PCLinkNak, PCLinkRejected, PCLinkTimeout, PCLinkWriteUnconfirmed
 import pclink_app
 from pclink_app import gather_disc_data_write_items
 
@@ -593,6 +593,58 @@ class TestSendWriteEndToEnd(unittest.TestCase):
         caller_thread.join(timeout=3)
         self.assertFalse(caller_thread.is_alive())
         self.assertIsInstance(result.get("error"), PCLinkNak)
+
+    def test_send_write_raises_when_payload_answered_with_eot(self):
+        # v1.12.3, real CD-425M (probe_artist_name.py, slot 1): the
+        # artist-name write got ReadyForData, then the changer answered the
+        # TextData payload frame with EOT instead of ACK, and nothing was
+        # written. That used to pass for an ACK. Bytes are the logged ones.
+        request_data = bytes.fromhex("80 01 01 00 00 02 03")
+        follow_up_data = bytes.fromhex("01 00 00 02 02 03 00") + b"Nirvana"
+        request_frame = proto.encode_frame(proto.CMD_DATA_ACCESS, request_data)
+        follow_up_frame = proto.encode_frame(proto.CMD_TEXT_DATA, follow_up_data)
+        self.assertEqual(request_frame, bytes.fromhex("02 03 07 00 80 01 01 00 00 02 03 6f"))
+        self.assertEqual(follow_up_frame,
+                         bytes.fromhex("02 fe 0e 00 01 00 00 02 02 03 00 4e 69 72 76 61 6e 61 1d"))
+
+        result = {}
+
+        def do_call():
+            try:
+                self.conn.send_write(proto.CMD_DATA_ACCESS, request_data,
+                                     proto.CMD_TEXT_DATA, follow_up_data, timeout=5.0)
+            except Exception as exc:  # noqa: BLE001
+                result["error"] = exc
+
+        caller_thread = threading.Thread(target=do_call, daemon=True)
+        caller_thread.start()
+
+        self.assertTrue(self._wait_until(lambda: len(self.fake.sent_bytes()) >= 1))
+        self.fake.feed(bytes([link_mod.proto.ACK]))
+        self.assertTrue(
+            self._wait_until(lambda: len(self.fake.sent_bytes()) >= 1 + len(request_frame))
+        )
+        self.fake.feed(bytes([link_mod.proto.ACK]))
+        self.fake.feed(bytes.fromhex("02 09 01 00 01 f5"))  # ReadyForData, raw byte 1
+        self.fake.feed(bytes([link_mod.proto.EOT]))
+
+        len_before_txn2 = 1 + len(request_frame) + 2
+        self.assertTrue(
+            self._wait_until(lambda: len(self.fake.sent_bytes()) > len_before_txn2)
+        )
+        self.fake.feed(bytes([link_mod.proto.ACK]))
+        self.assertTrue(
+            self._wait_until(
+                lambda: len(self.fake.sent_bytes()) >= len_before_txn2 + 1 + len(follow_up_frame)
+            )
+        )
+        self.fake.feed(bytes([link_mod.proto.EOT]))  # refuses the payload
+
+        caller_thread.join(timeout=5)
+        self.assertFalse(caller_thread.is_alive())
+        self.assertIsInstance(result.get("error"), PCLinkRejected)
+        # Same bytes on the wire as the logged session: we still close with EOT.
+        self.assertTrue(self.fake.sent_bytes().endswith(follow_up_frame + bytes([link_mod.proto.EOT])))
 
     def test_encoders_match_real_hardware_session_bytes(self):
         # Anchors the encoders to the exact bytes seen in a real user's

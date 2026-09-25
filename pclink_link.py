@@ -144,6 +144,18 @@ class PCLinkNak(PCLinkError):
     pass
 
 
+class PCLinkRejected(PCLinkError):
+    """The changer answered our frame with EOT instead of ACK: it received
+    the frame and refused it. Seen on a real CD-425M every time a write
+    payload was wrong, with nothing written: the v1.2.0 inline-follow-up
+    write, v1.4.1/v1.4.2's DiscGenre follow-up frames, and v1.12.3's
+    artist-name (info_type 0x02) TextData payload. Before v1.12.3 this was
+    taken for an ACK, so a refused write looked like it had gone through.
+    (Not the same as a frame that is ACK'd and then followed by EOT with no
+    reply, e.g. DiscTOC while changing discs -- that's an empty reply.)"""
+    pass
+
+
 class PCLinkWriteUnconfirmed(PCLinkError):
     """Raised by send_write() when the write's outcome can't be confirmed
     -- currently: the changer never replied with ReadyForData to the
@@ -360,6 +372,12 @@ class PCLinkConnection:
                 raise PCLinkNak("Changer NAK'd the frame (checksum mismatch?)")
             if resp is None:
                 raise PCLinkTimeout("No ACK/NAK after frame")
+            # EOT instead of ACK means the changer refused the frame (see
+            # PCLinkRejected). The rest of the transaction runs as before,
+            # so the bytes on the wire don't change -- the v1.12.3 log shows
+            # the changer happy with the next transaction after this -- and
+            # the error is raised at the end.
+            rejected = resp == proto.EOT
 
             # 4. Reply data, if any, rides along in THIS SAME transaction:
             # per the docs' "Reply Framing" section, a reply is sent as a
@@ -390,6 +408,12 @@ class PCLinkConnection:
                         "No ACK after our EOT for %s (command was still received)",
                         proto.COMMAND_NAMES.get(req.command, req.command),
                     )
+            if rejected:
+                raise PCLinkRejected(
+                    f"Changer answered the "
+                    f"{proto.COMMAND_NAMES.get(req.command, req.command)} frame with "
+                    f"EOT instead of ACK -- it refused it"
+                )
 
         except Exception as exc:
             req.error = exc

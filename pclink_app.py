@@ -221,7 +221,11 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # v1.12.2 -- CONFIRMED that writing an empty program clears it (and drops
 # the changer from Program mode back to Track mode). The Write Program
 # dialog now says that for an empty program. Docs/tests otherwise.
-APP_VERSION = "1.12.2"
+# v1.12.3 -- the artist-name text type (info_type 0x02) isn't supported
+# on the CD-425M (probe_artist_name.py, real hardware). pclink_link.py now
+# raises PCLinkRejected when the changer answers a frame with EOT instead
+# of ACK; before, a refused write was logged as done.
+APP_VERSION = "1.12.3"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),

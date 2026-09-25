@@ -8,3 +8,6 @@ protocol_reference/*.pdf
 # Library tab: the last changer scan (v1.11.0), rebuilt by "Scan Changer"
 library_cache.json
 library_cache.json.tmp
+
+# probe_artist_name.py output (raw-byte logs from the artist-name experiment)
+probe_artist_*.log

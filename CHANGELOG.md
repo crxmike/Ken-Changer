@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.12.3 -- The CD-425M has no artist-name field; a refused frame is no longer taken for an ACK
+
+**Experiment: the artist-name text type** (2026-09-25, raw-byte log,
+`probe_artist_name.py`). `cd_types.html` lists TextData info_type `0x02`
+as "artist name", and `InfoType.ARTIST_NAME` had been defined but never
+used. If the changer stored an artist per disc, gnudb results could stop
+squeezing "Artist / Album" into the 25-character disc name. Slot 1 ("The
+Tragically Hip / Trou", genre `0x03`, userfiles `0x02`, no CD-Text):
+- Read: `DataAccess(RETRIEVE_DATA, TextData, info_type 0x02)`
+  (`02 03 07 00 00 01 01 00 00 02 00 f2`). ACK, then the changer's EOT, no
+  reply frame. Same result before and after the write.
+- Write: `WRITE_NAME` with info_type `0x02` and genre `0x03`
+  (`02 03 07 00 80 01 01 00 00 02 03 6f`). The changer sent ReadyForData
+  (`02 09 01 00 01 f5`, raw byte 1, as for name writes). The TextData
+  payload (`02 fe 0e 00 01 00 00 02 02 03 00 4e 69 72 76 61 6e 61 1d`,
+  "Nirvana", genre and userfiles carried over) was answered with **EOT
+  instead of ACK**, the same refusal seen in v1.2.0 and v1.4.1/v1.4.2.
+- Re-read: the disc name, genre and userfiles were unchanged.
+
+**Result:** no artist field on this changer, at least for a non-CD-Text
+disc. No artist UI will be built. Untried: a CD-Text disc, in case the
+changer reports an artist read from the disc. The probe script stays in
+the repo for that.
+
+**Bug found by the same log:** `pclink_link.py` only checked the answer to
+a sent frame for NAK or a timeout, so an EOT counted as an ACK. The probe
+reported "the changer ACK'd both transactions" for a write the changer
+had refused, and the app would have logged such a write as done. Now an
+EOT there raises `PCLinkRejected` (a `PCLinkError`, which every write path
+already catches and logs as an error). The bytes on the wire don't
+change: the transaction still closes with our EOT, as in this log, where
+the next request went through normally. The confirmed writes all got a
+real ACK, so they aren't affected. The fix is **not yet seen in the app
+on real hardware**.
+
+Tests: `test_probe_artist_name.py` (13, one replaying this session) and
+`test_send_write_raises_when_payload_answered_with_eot` in
+`test_write_feature.py`, which feeds the link the logged bytes.
+
 ## v1.12.2 -- Writing an empty program CONFIRMED
 
 **Writing an empty program clears it** (2026-09-24, raw-byte log). This

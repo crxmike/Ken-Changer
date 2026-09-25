@@ -110,6 +110,14 @@ gaps" #21.
 
 ## In progress / next up
 
+- **Artist name (info_type 0x02): not supported (v1.12.3, real
+  hardware).** A read gets no reply, and a write's payload is refused
+  with EOT. gnudb results stay "Artist / Album" in the disc name. Only
+  untried case: a CD-Text disc (`probe_artist_name.py COM3 <slot>`).
+  The same log led to a link fix: a frame answered with EOT now raises
+  `PCLinkRejected` instead of counting as an ACK (not yet seen in the
+  app on real hardware). See README "Honest gaps" #22.
+
 - **Library userfiles and the Userfiles tab's saved-scan rows: confirmed
   (v1.12.1).**
 
