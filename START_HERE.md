@@ -132,7 +132,10 @@ gaps" #21.
   and on Rescan. **v1.12.11 (confirmed):** no name writes to a CD-Text
   disc; its genre and userfiles ride on a re-sent track 1 name (userfiles
   and genre both confirmed with slot 4 in the drive, from the Disc Data,
-  Userfiles and Library tabs and Backup restore). See README "Honest gaps" #23.
+  Userfiles and Library tabs and Backup restore). **v1.12.12:** reads queued
+  behind a stream read wait up to 30s to start; the TOC was read on
+  connect (17:32), but only a short (~2s) stream has been seen since, so
+  the ~12s case is still unexercised. See README "Honest gaps" #23.
 
 - **Artist name (info_type 0x02): not supported (v1.12.3, real
   hardware).** A read gets no reply, and a write's payload is refused

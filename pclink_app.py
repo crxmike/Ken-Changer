@@ -229,7 +229,9 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # v1.12.11 -- no name writes to a CD-Text disc (its titles come from the
 # disc); its genre and userfiles ride on a re-sent track 1 name instead of
 # the disc name, which can't be read while it's in the drive.
-APP_VERSION = "1.12.11"
+# v1.12.12 -- queued requests wait up to 30s (not 5s) to start, so an
+# auto-fetch queued behind a CD-Text stream read no longer gives up.
+APP_VERSION = "1.12.12"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),

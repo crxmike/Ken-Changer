@@ -19,6 +19,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 
 # test_write_feature stubs out pyserial before pclink_link is imported.
 from test_write_feature import FakeSerial  # noqa: E402
@@ -275,6 +276,26 @@ class TestSendWaitsForStartedTransaction(_LinkTestBase):
         threading.Timer(0.3, req.done.set).start()
         self.assertTrue(PCLinkConnection._wait_done(req, 0.05))
         self.assertFalse(req.cancelled)
+
+    def test_default_wait_outlasts_a_stream_read(self):
+        # v1.12.12, 17:22:27-17:22:39 (2026-09-26): the disc-name read held
+        # the line ~12s; the DiscTOC auto-fetch queued behind it gave up
+        # after three 5s waits. The default wait now covers a whole stream
+        # read: ~2s before the first frame, then the cut-off.
+        worst_stream_read = 2.0 + link_mod.T_STREAM_RESYNC_MAX + link_mod.T_ACK * 3
+        self.assertGreater(link_mod.T_QUEUE_WAIT, worst_stream_read)
+
+    def test_queued_request_waits_its_turn_by_default(self):
+        # Scaled down: the IO thread picks the request up only after 0.3s
+        # (as if busy with a stream); the default wait lets it through.
+        def io_thread():
+            req = self.conn._out_q.get(timeout=1.0)
+            time.sleep(0.3)
+            req.started.set()
+            req.done.set()
+        threading.Thread(target=io_thread, daemon=True).start()
+        with unittest.mock.patch.object(link_mod, "T_QUEUE_WAIT", 1.0):
+            self.conn.send(proto.CMD_DATA_ACCESS, bytes([0]))  # no timeout passed
 
     def test_unstarted_request_is_cancelled_and_never_sent(self):
         with self.assertRaises(link_mod.PCLinkTimeout):

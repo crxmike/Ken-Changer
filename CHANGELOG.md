@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.12.12 -- Reads queued behind a CD-Text stream no longer give up
+
+Seen on the real CD-425M (2026-09-26, 17:22 raw-byte log, connecting
+with slot 4 in the drive): the disc-name auto-fetch hit the stream and
+held the line from 17:22:27 to 17:22:39. The DiscTOC auto-fetch queued
+behind it waited 5s to start, timed out, retried twice more the same way
+and logged "gave up after 3 attempts", so the TOC wasn't read on
+connect. `send()` and `send_write()` now wait up to `T_QUEUE_WAIT` (30s)
+by default for a queued request to start, which covers a whole stream
+read (~2s before the first frame, then up to 15s of cut-off). Collisions
+are unaffected: they fail inside a started transaction, not in the
+queue.
+
+**On real hardware** (17:32 log, connecting with slot 4 in the drive):
+the DiscTOC retry queued behind the disc-name read and went out right
+after it (17:32:36), full TOC with lead-out. But that stream was ended
+by the changer's own StateEvent after ~2s, so the wait was short enough
+for the old 5s too: the long (~12s) case that failed at 17:22 hasn't
+been seen again yet.
+
+Tests: 2 more in `test_cdtext_stream.py`.
+
 ## v1.12.11 -- No name writes to a CD-Text disc; its genre and userfiles ride on track 1
 
 From the 2026-09-26 16:32-16:40 raw-byte log (slot 4, the CD-Text disc).

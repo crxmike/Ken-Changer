@@ -923,7 +923,12 @@ exactly what's happening):
      4 in the drive, userfiles 0x00 -> 0x07, then genre Soundtrack ->
      Country, each on a track 1 write; the Library's userfile menu too).
      Backup restore too: it put slot 4's genre back on a track 1 write,
-     wrote no names, and verified. Before this, setting userfiles on slot 4 in the
+     wrote no names, and verified.
+   - **A stream read holds the line ~12s**, so since v1.12.12 a queued
+     request waits up to 30s to start (was 5s: the TOC auto-fetch on
+     connect gave up behind it, real hardware 17:22). Worked on the next
+     connect (17:32), but that stream ended after ~2s, so the long case
+     isn't exercised yet. Before this, setting userfiles on slot 4 in the
      drive stopped at "couldn't read the disc name" (real hardware).
    - **The stream never carries text and never ends (v1.12.8, real
      hardware, `probe_cdtext_stream.py`):** let run for 60s, playing or

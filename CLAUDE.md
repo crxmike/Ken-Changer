@@ -53,7 +53,9 @@ handling of it is confirmed (v1.12.6). v1.12.9: `DataAccess`'s "unknown" byte is
 v1.12.10 uses it to read a CD-Text disc's full titles per track
 (confirmed). v1.12.11: no name writes to a CD-Text disc; its genre and
 userfiles ride on a re-sent track 1 name (confirmed: a track write sets
-userfiles too).
+userfiles too). v1.12.12: queued reads wait up to 30s to start, so the
+TOC auto-fetch no longer gives up behind a stream read (worked once on
+hardware, but behind a short stream; the ~12s case is unexercised).
 v1.12.7: Next Track on that disc
 sends the changer to the next disc and replaces its PC-written names
 with its CD-Text (two logged cases; trigger details open).

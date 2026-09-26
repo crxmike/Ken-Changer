@@ -136,6 +136,14 @@ TEXT_STREAM_FRAMES = 5
 T_STREAM_QUIET = 2.5
 T_STREAM_RESYNC_MAX = 15.0
 
+# How long send()/send_write() wait by default for a queued request to
+# START (see _wait_done). v1.12.12: it was 5s, but a name read that hits
+# the stream holds the line for ~12s (2s before the first frame, then the
+# cut-off; 17:22:27-17:22:39 on real hardware, 2026-09-26), so an
+# auto-fetch queued behind it (the DiscTOC read on connect) timed out on
+# every retry and gave up. This covers a whole stream read, with margin.
+T_QUEUE_WAIT = 30.0
+
 # Per-byte poll timeout used for the read loop. This is also the practical
 # floor on how quickly a "give up waiting" deadline (like the reply windows
 # above) actually takes effect, since a single blocking ser.read(1) call
@@ -275,12 +283,15 @@ class PCLinkConnection:
 
     # -- sending -------------------------------------------------------
 
-    def send(self, command: int, data: bytes = b"", timeout: float = 5.0,
+    def send(self, command: int, data: bytes = b"", timeout: Optional[float] = None,
              reply_window: Optional[float] = None, let_stream_run: bool = False) -> None:
         """Queue a frame to be sent on the IO thread and block until the
         send/ack/eot handshake for it has completed (or raise on error).
+        `timeout` limits the wait for it to start (default T_QUEUE_WAIT).
         `reply_window` and `let_stream_run` are for probes; see
         _SendRequest."""
+        if timeout is None:
+            timeout = T_QUEUE_WAIT
         req = _SendRequest(command, data, reply_window, let_stream_run)
         self._out_q.put(req)
         if not self._wait_done(req, timeout):
@@ -296,7 +307,7 @@ class PCLinkConnection:
         data: bytes,
         follow_up_command: int,
         follow_up_data: bytes,
-        timeout: float = 8.0,
+        timeout: Optional[float] = None,
     ) -> None:
         """The DataAccess write choreography -- CONFIRMED against real
         hardware for Action.WRITE_NAME (a write followed by an
@@ -323,6 +334,8 @@ class PCLinkConnection:
         got a ReadyForData reply at all. Check the log (with "show raw
         bytes" on) to see which transaction a given failure came from.
         """
+        if timeout is None:
+            timeout = T_QUEUE_WAIT
         req = _SendRequest(command, data)
         self._out_q.put(req)
         if not self._wait_done(req, timeout):
