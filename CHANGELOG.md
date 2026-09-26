@@ -1,5 +1,79 @@
 # Changelog
 
+## v1.12.11 -- No name writes to a CD-Text disc; its genre and userfiles ride on track 1
+
+From the 2026-09-26 16:32-16:40 raw-byte log (slot 4, the CD-Text disc).
+**Seen on the real CD-425M** in that log:
+- **A genre write works on a CD-Text disc.** "test name" written as the
+  disc name with genre Soundtrack while slot 4 was in the drive
+  (16:35:18): the genre changed (Christian -> Soundtrack) and stayed.
+- **A written disc name is stored but not used.** "test name" read back
+  only while slot 4 was out of the drive (16:38:02, and during Changing
+  at 16:38:09); in the drive the disc-name read still streams. The front
+  panel still showed "-----" (user report).
+- **The stored track names are now the CD-Text titles cut to 25**
+  ("We Wish You A Merry Chris"); the "Name 1".."Name 10" written earlier
+  are gone. Fits the manual: the changer memorizes CD-Text titles.
+- **Setting userfiles on slot 4 was blocked by the app.** Both routes
+  re-send the disc name, so they read it first, and in the drive that
+  read streams: Library "Userfiles: slot 4 not changed." (16:39:17), and
+  the Userfiles & Program tab's "Couldn't read slot 4's current disc
+  name" (16:40:12). Nothing was written.
+- The format byte: slot 4 reports `0x90` in DiscInfo, DiscTOC and every
+  text reply, in the drive or not; slots 1-3 report `0x00` everywhere.
+
+**CONFIRMED on the real CD-425M** (2026-09-26, 17:07-17:09 raw-byte log,
+slot 4 in the drive):
+- Recognized from the first stream frame on connect (17:07:11), logged
+  once.
+- **A track-name write sets userfiles.** Userfiles tab, 0x00 -> 0x07
+  (17:07:47): `02 fe 13 00 04 00 01 07 01 1a 00 "Silent Night"`. Read
+  back 0x07 in every text frame, the InfoEvent and DiscUserfiles; genre
+  kept (Soundtrack).
+- **Genre on track 1** from the Disc Data tab, Soundtrack -> Country
+  (17:09:10): `... 01 07 01 07 00 "Silent Night"`; userfiles kept 0x07.
+
+Also CONFIRMED (17:13-17:18 log and a screenshot):
+- The Disc Data tab greys out slot 4's Custom column and says why.
+- **The Library's userfile menu** took slot 4 out of #2 (17:13:46,
+  0x07 -> 0x05) while it was in the drive: the slot read found no disc
+  name, matched the scan by track 1, wrote on track 1 (`... 01 05 01 07
+  00 "Silent Night"`) and read back 0x05.
+- An Export then Backup restore ran over slot 4 without trouble ("4
+  already matched"). Nothing differed there, so a second test followed
+  (17:24-17:25 log): genre changed to Easy Listening, then the same
+  backup restored. **Restore wrote one value to slot 4, on track 1**
+  (`... 01 05 01 07 00 "Silent Night"`: Country, #1+#3), no names, and
+  logged "slot 4 verified -- re-read matches the backup". The
+  export's "1 disc(s) are missing a value: [4]" is slot 4's unreadable
+  disc name, expected for this disc.
+
+**Changes (made before that test):**
+- **Recognizing a CD-Text disc** (`_note_disc_format`): format `0x90` in
+  DiscInfo (only with a track count above 0: empty slots 100-101 report
+  it too), DiscTOC or a disc/track text reply, or a name read that
+  streams. `0x00` clears it. A slot read (Library, Backup) now includes
+  `cdtext`. The log says "Slot N holds a CD-Text disc..." once.
+- **No name writes to it.** The Disc Data tab greys out the Custom column
+  and says why; Write to Changer writes nothing but a chosen genre, and
+  says the typed names aren't written. Backup restore leaves its names
+  alone (it would have written the full CD-Text titles back, cut to 25).
+- **Genre and userfiles ride on track 1** (`library_backup.
+  state_carrier`): a CD-Text disc re-sends track 1's name, as stored (the
+  CD-Text title cut to 25), instead of the disc name, which can't be read
+  in the drive. Track 1 reads fine either way. Used by Write to Changer
+  (genre), the Userfiles & Program tab, the Library's userfile menu and
+  Backup restore. Genre on a track write was already CONFIRMED (v1.5.1:
+  a track write used to reset it); userfiles on a track write is
+  CONFIRMED by the 17:07 log above.
+- The write guard reads what's missing twice when needed: a disc-name
+  read that streams shows the disc is CD-Text, and then track 1 is read.
+- The Library's userfile check matches a CD-Text disc in the drive (no
+  disc name) by track 1's title, compared to 25 characters.
+
+Tests: `test_cdtext_write_block.py` (33), built from the 16:32-16:40 and
+17:07-17:09 logs' frames; `test_cdtext_stream.py`'s fakes know the new attributes.
+
 ## v1.12.10 -- Full CD-Text track names for a CD-Text disc in the drive
 
 Uses v1.12.9's finding in the app. **CONFIRMED on the real CD-425M**

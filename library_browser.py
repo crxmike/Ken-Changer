@@ -78,23 +78,42 @@ def keep_unread_fields(raw_library: dict, record: dict) -> tuple[dict, list[str]
 
 # -- Adding a disc to a userfile (v1.12.0) --------------------------------
 
+def _track1(tracks: dict | None) -> str:
+    """Track 1's title from a slot read (int keys) or a saved scan (str keys)."""
+    tracks = tracks or {}
+    return tracks.get(1) or tracks.get("1") or ""
+
+
 def userfile_change(slot: int, scanned_name: str | None, state: dict, number: int,
-                    member: bool) -> tuple[int | None, str]:
+                    member: bool, scanned_tracks: dict | None = None) -> tuple[int | None, str]:
     """Whether to put the disc in `slot` into userfile #`number` (member
     True) or take it out (False). `state` is what the changer says now (a
-    fresh slot read: raw track count, name, genre code, userfile mask).
-    The write re-sends the disc's name, so it only goes ahead when the slot
-    still holds the disc the scan saw. Returns (new mask, "") to write it,
-    or (None, why not)."""
+    fresh slot read: raw track count, name, genre code, userfile mask,
+    cdtext). The write re-sends one of the disc's names, so it only goes
+    ahead when the slot still holds the disc the scan saw. A CD-Text disc
+    in the drive has no readable disc name (v1.12.4), so it's recognized
+    by track 1's title instead (compared to 25 characters: the scan may
+    hold the full CD-Text title or the changer's cut copy, v1.12.11).
+    Returns (new mask, "") to write it, or (None, why not)."""
     count = state.get("track_count")
     if count is None:
         return None, f"Couldn't read slot {slot}, so nothing was written."
     if not count:
         return None, f"Slot {slot} is empty now, so nothing was written."
     name = state.get("name")
-    if name is None:
+    if name is None and state.get("cdtext"):
+        now, scanned = _track1(state.get("tracks")), _track1(scanned_tracks)
+        if not now:
+            return None, f"Couldn't read slot {slot}'s track 1 name, so nothing was written."
+        if now[:25] != scanned[:25]:
+            return None, (
+                f"Slot {slot}'s track 1 is now {now!r}, not {scanned or '(no name)'!r} as in "
+                "the scan, so nothing was written. The library has been updated; check it's "
+                "the disc you meant and try again."
+            )
+    elif name is None:
         return None, f"Couldn't read slot {slot}'s disc name, so nothing was written."
-    if name != (scanned_name or ""):
+    elif name != (scanned_name or ""):
         return None, (
             f"Slot {slot} now holds {name or '(no name)'!r}, not "
             f"{scanned_name or '(no name)'!r} as in the scan, so nothing was written. "

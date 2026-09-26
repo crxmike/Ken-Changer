@@ -76,11 +76,12 @@ def known_track_count(track_count: int | None) -> int | None:
 
 def disc_record(slot: int, track_count: int | None, name: str | None,
                 tracks: dict[int, str] | None, genre: int | None,
-                userfiles: int | None) -> dict:
+                userfiles: int | None, cdtext: bool = False) -> dict:
     """One disc's backup entry from what the app read (None = not read).
     A track-names read starts with an index-0 frame that repeats the disc
     name (CONFIRMED, v1.10.0 export log); it's not a track, so it's
-    dropped."""
+    dropped. `cdtext` (v1.12.11, part of a slot read) isn't saved: the
+    changer reports it again on every read."""
     return {
         "slot": slot,
         "track_count": known_track_count(track_count),
@@ -292,24 +293,59 @@ def plan_disc_restore(saved: dict, current: dict) -> tuple[list, int | None, str
     if genre is None or mask is None:
         return [], None, "its current genre/userfiles couldn't be read, and a write would reset them"
 
+    cdtext = bool(current.get("cdtext"))
     items = []
-    if saved.get("name") and saved["name"] != current.get("name"):
-        items.append((0, saved["name"], proto.InfoType.DISC_NAMES, "Disc Name", genre))
     now_tracks = current.get("tracks") or {}
-    for track, title in sorted((saved.get("tracks") or {}).items()):
-        if (now_count is None or track <= now_count) and title != now_tracks.get(track):
-            items.append((track, title, proto.InfoType.TRACK_NAMES, f"Track {track}", genre))
+    if not cdtext:
+        # A CD-Text disc's titles come from the disc itself (v1.12.11), so
+        # its names are left alone.
+        if saved.get("name") and saved["name"] != current.get("name"):
+            items.append((0, saved["name"], proto.InfoType.DISC_NAMES, "Disc Name", genre))
+        for track, title in sorted((saved.get("tracks") or {}).items()):
+            if (now_count is None or track <= now_count) and title != now_tracks.get(track):
+                items.append((track, title, proto.InfoType.TRACK_NAMES, f"Track {track}", genre))
 
     if not items and (genre != current.get("genre") or mask != current.get("userfiles")):
-        carrier = saved.get("name") or current.get("name")
-        if not carrier:
-            return [], None, (
-                "its genre/userfiles differ, but they're written by re-sending the "
-                "disc name and the disc has no name"
-            )
-        items.append((0, carrier, proto.InfoType.DISC_NAMES, "Disc Name (genre/userfiles)", genre))
+        item, error = state_carrier(cdtext, saved.get("name") or current.get("name"),
+                                    now_tracks.get(1), genre)
+        if error:
+            return [], None, "its genre/userfiles differ, but " + error
+        items.append(item)
 
     return items, mask, None
+
+
+# The stored copy of a CD-Text title is cut to 25 characters (v1.12.11
+# log, "We Wish You A Merry Chris"), like a disc title (manual p. 28).
+CARRIER_TEXT_MAX = 25
+
+
+def state_carrier(cdtext: bool, disc_name: str | None, track1: str | None,
+                  genre: int) -> tuple[tuple | None, str | None]:
+    """The write that carries a disc's genre and userfiles when no name is
+    being changed: every TextData write sets both for the whole disc
+    (genre CONFIRMED v1.5.1 on a track write, userfiles CONFIRMED v1.8.1 on
+    a disc-name write), so one name is re-sent unchanged with them.
+
+    Normally that's the disc name. A CD-Text disc (v1.12.11) re-sends
+    track 1's name instead: its disc name can't be read while it's in the
+    drive (the endless stream, v1.12.4) and its front panel ignores a
+    written one, but track 1 reads fine either way, and the changer
+    stores it as the CD-Text title cut to 25, which is what's re-sent.
+    CONFIRMED on real hardware (v1.12.11, slot 4 in the drive): a track 1
+    write set userfiles 0x00 -> 0x07, and another set the genre.
+
+    Returns ((index, text, info_type, label, genre), None), or
+    (None, reason) when there's no name to re-send."""
+    if cdtext:
+        if not track1:
+            return None, ("on a CD-Text disc they're written by re-sending track 1's "
+                          "name, and it couldn't be read")
+        return (1, track1[:CARRIER_TEXT_MAX], proto.InfoType.TRACK_NAMES,
+                "Track 1 (genre/userfiles)", genre), None
+    if not disc_name:
+        return None, "they're written by re-sending the disc name and the disc has no name"
+    return (0, disc_name, proto.InfoType.DISC_NAMES, "Disc Name (genre/userfiles)", genre), None
 
 
 def plan_userfile_names_restore(saved: dict[int, str], current_by_bit: dict[int, str]) -> list[tuple[int, str]]:

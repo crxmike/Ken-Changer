@@ -226,7 +226,10 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # on the CD-425M (probe_artist_name.py, real hardware). pclink_link.py now
 # raises PCLinkRejected when the changer answers a frame with EOT instead
 # of ACK; before, a refused write was logged as done.
-APP_VERSION = "1.12.10"
+# v1.12.11 -- no name writes to a CD-Text disc (its titles come from the
+# disc); its genre and userfiles ride on a re-sent track 1 name instead of
+# the disc name, which can't be read while it's in the drive.
+APP_VERSION = "1.12.11"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -610,7 +613,8 @@ def userfile_flags_from_mask(mask: int) -> list[bool]:
     return [bool(mask & (1 << i)) for i in range(USERFILE_COUNT)]
 
 
-def plan_userfile_membership_write(disc_name: str | None, genre: int | None) -> tuple[list, str | None]:
+def plan_userfile_membership_write(disc_name: str | None, genre: int | None, cdtext: bool = False,
+                                   track1: str | None = None) -> tuple[list, str | None]:
     """Which discs a disc belongs to is set by re-sending its disc name
     with the new mask in TextData's `userfiles` byte, the same way genre
     rides along (v1.5.0/v1.5.1), rather than via the standalone
@@ -624,8 +628,17 @@ def plan_userfile_membership_write(disc_name: str | None, genre: int | None) -> 
     the one and would reset the other (genre is set by every TextData
     write, CONFIRMED v1.5.1). Returns (items, error) where items is in
     _write_to_changer_worker's (index, text, info_type, label, genre)
-    form; the mask itself goes in the worker's `userfiles` argument."""
-    if not disc_name:
+    form; the mask itself goes in the worker's `userfiles` argument.
+
+    v1.12.11: a CD-Text disc re-sends track 1's name instead (see
+    library_backup.state_carrier), CONFIRMED on real hardware."""
+    if cdtext:
+        if not track1:
+            return [], (
+                "Can't set userfiles: on a CD-Text disc they're written by re-sending "
+                "track 1's name, and it couldn't be read."
+            )
+    elif not disc_name:
         return [], (
             "Can't set userfiles: they're written by re-sending the disc's "
             "name, and this disc has no name stored (or it couldn't be read). "
@@ -636,7 +649,27 @@ def plan_userfile_membership_write(disc_name: str | None, genre: int | None) -> 
             "Can't set userfiles: the disc's current genre couldn't be read, "
             "and the write would reset it."
         )
-    return [(0, disc_name, proto.InfoType.DISC_NAMES, "Disc Name (userfiles only)", genre)], None
+    item, _ = library_backup.state_carrier(cdtext, disc_name, track1, genre)
+    return [item[:3] + (item[3].replace("genre/userfiles", "userfiles only"), genre)], None
+
+
+def plan_cdtext_disc_data_write(name_items: list, genre_code: int | None,
+                                track1: str | None) -> tuple[list, str | None]:
+    """Write to Changer on a CD-Text disc (v1.12.11): its titles come from
+    the disc (owner's manual: a CD-Text disc can't be given a title; a
+    written disc name is stored but the front panel still shows "-----",
+    real hardware), so typed names are never written. A selected genre is
+    written by re-sending track 1's name (library_backup.state_carrier).
+    Returns (items, message): message explains what isn't written, or why
+    nothing can be."""
+    skipped = ("This is a CD-Text disc: its titles come from the disc itself, so the "
+               "names in the Custom column aren't written." if name_items else None)
+    if genre_code is None:
+        return [], skipped or "Nothing to write: only the genre can be changed on a CD-Text disc."
+    item, error = library_backup.state_carrier(True, None, track1, genre_code)
+    if error:
+        return [], "Can't write genre: " + error + "."
+    return [item[:3] + ("Track 1 (genre)", genre_code)], skipped
 
 
 def build_program_write(steps: list[tuple[int, int]]) -> tuple[bytes, bytes]:
@@ -672,13 +705,19 @@ def program_items_from_steps(steps: list[tuple[int, int]]) -> list[dict]:
 
 
 def missing_disc_state(slot: int, disc_names: dict, genres: dict, userfiles: dict,
-                       need_name: bool = False) -> list[str]:
+                       need_name: bool = False, track_names: dict | None = None,
+                       cdtext: bool = False) -> list[str]:
     """What a TextData write to `slot` needs but the app hasn't read yet.
     Every TextData write sets the disc's genre (CONFIRMED v1.5.1) and, it's
     assumed by analogy, its userfile mask, so writing without knowing
-    them risks resetting them to 0."""
+    them risks resetting them to 0. `need_name`: the write re-sends a name
+    to carry them -- the disc name, or track 1's on a CD-Text disc
+    (v1.12.11, library_backup.state_carrier)."""
     missing = []
-    if need_name and slot not in disc_names:
+    if need_name and cdtext:
+        if not (track_names or {}).get(slot, {}).get(1):
+            missing.append("track 1's name")
+    elif need_name and slot not in disc_names:
         missing.append("disc name")
     if slot not in genres:
         missing.append("genre")
@@ -751,6 +790,9 @@ class App(tk.Tk):
         # (v1.12.4, pclink_link.PCLinkTextStream), so the track-name read
         # right after it is skipped rather than streaming again.
         self._text_stream_slots: set[int] = set()
+        # Slots holding a CD-Text disc (v1.12.11, see _note_disc_format):
+        # their names aren't written, and genre/userfiles ride on track 1.
+        self._cdtext_slots: set[int] = set()
         self._track_name_cache: dict[int, dict[int, str]] = {}  # slot -> {track: name}
         self._genre_cache: dict[int, int] = {}               # slot -> genre code
         # slot -> {"tracks": {track_num: {minutes,seconds,frames}},
@@ -1571,6 +1613,7 @@ class App(tk.Tk):
         self._pending_mode = None
         self._disc_name_cache.clear()
         self._track_name_cache.clear()
+        self._cdtext_slots.clear()
         self._genre_cache.clear()
         self._toc_cache.clear()
         for key in ("Disc Name", "Genre", "Track Name"):
@@ -1675,9 +1718,12 @@ class App(tk.Tk):
                 occupied = (p.get("track_count") or 0) > 0
                 self._disc_occupancy[slot] = occupied
                 self._disc_track_count[slot] = p.get("track_count") or 0
+                # Empty slots 100-101 report 0x90 too (v1.7.1): not a disc.
+                self._note_disc_format(slot, p.get("format") if occupied else proto.Format.NO_CDTEXT)
                 self.ui_queue.put(lambda s=slot, o=occupied: self._update_disc_map_cell(s, o))
 
         elif frame.command == proto.CMD_DISC_TOC:
+            self._note_disc_format(frame.payload.get("slot"), frame.payload.get("format"))
             self._cache_toc(frame.payload)
 
         elif frame.command == proto.CMD_DISC_GENRE:
@@ -1710,6 +1756,8 @@ class App(tk.Tk):
             p = frame.payload
             index = p.get("index", p.get("track"))
             text = p.get("text")
+            if p.get("info_type") in (proto.InfoType.DISC_NAMES, proto.InfoType.TRACK_NAMES):
+                self._note_disc_format(p.get("slot"), p.get("format"))
             if frame.command == proto.CMD_LONG_TEXT_DATA and proto.is_placeholder_text(text or ""):
                 # The endless stream a disc sends while it's in the drive
                 # (v1.12.4, see pclink_link.PCLinkTextStream). It says
@@ -1722,6 +1770,25 @@ class App(tk.Tk):
             note = "  (placeholder: no title stored)" if proto.is_placeholder_text(text or "") else ""
             self._log(f"Text: slot={p.get('slot')} index={index} -> {text!r}{note}")
             self._cache_name(p)
+
+    def _note_disc_format(self, slot, fmt):
+        """Record whether `slot` holds a CD-Text disc, from a reply's format
+        byte (v1.12.11): 0x90 counts as CD-Text (see proto.Format.
+        SEEN_CDTEXT), 0x00 as not. Other values are left alone. Safe to
+        call from the IO thread."""
+        if slot is None or fmt not in (proto.Format.SEEN_CDTEXT, proto.Format.NO_CDTEXT):
+            return
+        cdtext = fmt == proto.Format.SEEN_CDTEXT
+        if cdtext == (slot in self._cdtext_slots):
+            return
+        if cdtext:
+            self._cdtext_slots.add(slot)
+            self._log(f"Slot {slot} holds a CD-Text disc: its titles come from the disc, "
+                      f"so the app won't write names to it.")
+        else:
+            self._cdtext_slots.discard(slot)
+        if slot == self._current_slot:
+            self._refresh_disc_data_from_changer()
 
     def _note_current_position(self, slot, track):
         """Called (on the IO thread) whenever InfoEvent/DiscEvent tells us
@@ -2140,8 +2207,15 @@ class App(tk.Tk):
                 self._disc_data_rows[i]["row_var"].set(f"Track {i}")
                 self._disc_data_rows[i]["changer_var"].set(names.get(i, "-"))
 
+            # A CD-Text disc's titles come from the disc (v1.12.11): no
+            # name edits, only the genre.
+            cdtext = slot in self._cdtext_slots
+            for row in self._disc_data_rows:
+                row["entry"].configure(state="disabled" if cdtext else "normal")
+            note = (" -- CD-Text disc: its titles come from the disc and can't be changed "
+                    "(the genre can)" if cdtext else "")
             self.disc_data_summary.configure(
-                text=f"Slot {slot} -- {track_count} track(s) known"
+                text=f"Slot {slot} -- {track_count} track(s) known{note}"
             )
 
         self.ui_queue.put(update)
@@ -2401,12 +2475,20 @@ class App(tk.Tk):
         if slot is None:
             messagebox.showinfo("Nothing to write", "No current disc loaded yet.")
             return
+        genre_code = gather_genre_write_item(self.genre_custom_var.get())
+        items = gather_disc_data_write_items(self._disc_data_rows)
+        cdtext = slot in self._cdtext_slots
+        if cdtext and genre_code is None:
+            # Nothing it can write (names only): say so without reading.
+            self._write_cdtext_disc_data(link, slot, items, genre_code)
+            return
         if not self._ensure_disc_state(link, slot, self._write_to_changer, prefetched,
-                                       self.dd_write_btn):
+                                       self.dd_write_btn, need_name=cdtext):
             return
 
-        items = gather_disc_data_write_items(self._disc_data_rows)
-        genre_code = gather_genre_write_item(self.genre_custom_var.get())
+        if cdtext:
+            self._write_cdtext_disc_data(link, slot, items, genre_code)
+            return
         current_disc_name = self._disc_name_cache.get(slot)
         current_genre = self._genre_cache.get(slot)
         final_items, genre_error = merge_genre_into_write_items(
@@ -2454,6 +2536,32 @@ class App(tk.Tk):
             kwargs={"userfiles": userfiles}, daemon=True,
         ).start()
 
+    def _write_cdtext_disc_data(self, link: PCLinkConnection, slot: int, name_items: list,
+                                genre_code: int | None):
+        """Write to Changer for a CD-Text disc (v1.12.11): only the genre,
+        on a re-sent track 1 (see plan_cdtext_disc_data_write)."""
+        items, message = plan_cdtext_disc_data_write(
+            name_items, genre_code, self._track_name_cache.get(slot, {}).get(1))
+        if not items:
+            messagebox.showinfo("Write to Changer", message)
+            return
+        userfiles = self._userfiles_cache[slot]
+        if not messagebox.askyesno(
+            "Write to Changer",
+            (message + "\n\n" if message else "")
+            + f"Write genre {proto.GENRES.get(genre_code, genre_code)!r} to slot {slot}?\n\n"
+            f"It's written by re-sending track 1's name ({items[0][1]!r}) with the genre "
+            "attached, since this CD-Text disc's own disc title can't be read or set.",
+        ):
+            return
+        self.dd_write_btn.configure(state="disabled")
+        self._log(f"Write to Changer: slot {slot} is a CD-Text disc -- writing genre only, "
+                  f"on track 1 (keeping userfiles=0x{userfiles:02X})...")
+        threading.Thread(
+            target=self._write_to_changer_worker, args=(link, slot, items),
+            kwargs={"userfiles": userfiles}, daemon=True,
+        ).start()
+
     def _ensure_disc_state(self, link: PCLinkConnection, slot: int, retry, prefetched: bool,
                            button, need_name: bool = False) -> bool:
         """Guard for a TextData write to `slot`: True if the slot's genre and
@@ -2461,9 +2569,16 @@ class App(tk.Tk):
         on the first call, reads what's missing on a background thread and
         then calls `retry(prefetched=True)` on the UI thread, returning
         False; on that second call, shows an error if something still
-        couldn't be read, and returns False."""
-        missing = missing_disc_state(slot, self._disc_name_cache, self._genre_cache,
-                                     self._userfiles_cache, need_name=need_name)
+        couldn't be read, and returns False. The name needed is track 1's
+        on a CD-Text disc (v1.12.11), which a disc-name read that streams
+        can reveal, so the reads go round a second time if the list
+        changes."""
+        def still_missing():
+            return missing_disc_state(slot, self._disc_name_cache, self._genre_cache,
+                                      self._userfiles_cache, need_name=need_name,
+                                      track_names=self._track_name_cache,
+                                      cdtext=slot in self._cdtext_slots)
+        missing = still_missing()
         if not missing:
             return True
         if prefetched:
@@ -2479,6 +2594,9 @@ class App(tk.Tk):
 
         def work():
             self._read_disc_state_sync(link, slot, missing)
+            again = still_missing()
+            if again and again != missing:
+                self._read_disc_state_sync(link, slot, again)
 
             def done():
                 button.configure(state="normal")
@@ -2493,13 +2611,14 @@ class App(tk.Tk):
         reply frames arrive (and are cached by _on_frame) during each
         send()'s own drain, so the caches are current once this returns."""
         requests = {
-            "disc name": (proto.DataType.TEXT_DATA, proto.InfoType.DISC_NAMES),
-            "genre": (proto.DataType.DISC_GENRE, 0),
-            "userfiles": (proto.DataType.DISC_USERFILES, 0),
+            "disc name": (proto.DataType.TEXT_DATA, proto.InfoType.DISC_NAMES, 0),
+            "track 1's name": (proto.DataType.TEXT_DATA, proto.InfoType.TRACK_NAMES, 1),
+            "genre": (proto.DataType.DISC_GENRE, 0, 0),
+            "userfiles": (proto.DataType.DISC_USERFILES, 0, 0),
         }
         for item in what:
-            data_type, info_type = requests[item]
-            self._retrieve_sync(link, data_type, slot, info_type, item)
+            data_type, info_type, track = requests[item]
+            self._retrieve_sync(link, data_type, slot, info_type, item, track=track)
 
     def _retrieve_sync(self, link: PCLinkConnection, data_type: int, slot: int,
                        info_type: int = 0, what: str = "data", track: int = 0) -> bool:
@@ -2518,6 +2637,7 @@ class App(tk.Tk):
                 time.sleep(0.1)
             except PCLinkTextStream as exc:
                 self._text_stream_slots.add(slot)
+                self._note_disc_format(slot, proto.Format.SEEN_CDTEXT)
                 self._log(f"Reading slot {slot}'s {what} failed: {exc}")
                 return False
             except PCLinkError as exc:
@@ -3182,18 +3302,21 @@ class App(tk.Tk):
                                        self.uf_member_write_btn, need_name=True):
             return
         mask = userfile_mask_from_flags([v.get() for v in self.uf_member_vars])
-        items, error = plan_userfile_membership_write(self._disc_name_cache.get(slot),
-                                                      self._genre_cache.get(slot))
+        cdtext = slot in self._cdtext_slots
+        items, error = plan_userfile_membership_write(
+            self._disc_name_cache.get(slot), self._genre_cache.get(slot), cdtext,
+            self._track_name_cache.get(slot, {}).get(1))
         if error:
             messagebox.showinfo("Can't set userfiles", error)
             return
         old = self._userfiles_cache[slot]
+        carrier = ("track 1's name, since this CD-Text disc's disc title can't be read"
+                   if cdtext else "the disc name")
         if not messagebox.askyesno(
             "Write Disc's Userfiles",
             f"Set slot {slot}'s userfiles to {', '.join(proto.userfile_list(mask)) or 'none'} "
             f"(0x{old:02X} -> 0x{mask:02X})?\n\n"
-            f"This re-sends the disc name ({items[0][1]!r}) with the new userfiles "
-            "attached.",
+            f"This re-sends {carrier} ({items[0][1]!r}) with the new userfiles attached.",
         ):
             return
         self.uf_member_write_btn.configure(state="disabled")
@@ -3383,13 +3506,17 @@ class App(tk.Tk):
         The slot's cached values are dropped first, so a reply that never
         comes shows up as None rather than as a stale value. Keys match
         a parsed backup disc (see library_backup.plan_disc_restore)."""
-        state = {"track_count": None, "name": None, "tracks": None, "genre": None, "userfiles": None}
+        state = {"track_count": None, "name": None, "tracks": None, "genre": None, "userfiles": None,
+                 "cdtext": False}
         self._disc_track_count.pop(slot, None)
         if not self._retrieve_sync(link, proto.DataType.DISC_INFO, slot, what="disc info"):
             return state
         state["track_count"] = self._disc_track_count.get(slot)
         if not state["track_count"]:
             return state
+        # DiscInfo's format byte (v1.12.11, _note_disc_format); the name
+        # reads below can still add it (the stream).
+        state["cdtext"] = slot in self._cdtext_slots
         self._disc_name_cache.pop(slot, None)
         self._track_name_cache.pop(slot, None)
         self._genre_cache.pop(slot, None)
@@ -3407,6 +3534,7 @@ class App(tk.Tk):
             state["genre"] = self._genre_cache.get(slot)
         if self._retrieve_sync(link, proto.DataType.DISC_USERFILES, slot, what="userfiles"):
             state["userfiles"] = self._userfiles_cache.get(slot)
+        state["cdtext"] = slot in self._cdtext_slots
         return state
 
     def _library_can_start(self) -> PCLinkConnection | None:
@@ -3978,29 +4106,35 @@ class App(tk.Tk):
         if link is None:
             return
         slot = disc["slot"]
-        scanned = next((d.get("name") for d in self._browser_raw["discs"] if d["slot"] == slot), None)
+        scanned_disc = next((d for d in self._browser_raw["discs"] if d["slot"] == slot), {})
+        scanned = scanned_disc.get("name")
         userfile = library_browser.userfile_label(number, self._browser_library["userfile_names"])
         which = f"slot {slot} ({scanned})" if scanned else f"slot {slot}"
         question = (f"Add {which} to userfile {userfile}?" if member else
                     f"Take {which} out of userfile {userfile}?")
         if not messagebox.askyesno(
             "Userfiles",
-            question + "\n\nThis re-sends the disc's name with its new userfiles attached, the "
-            "same write as the Userfiles & Program tab. The disc's name, genre and userfiles "
+            question + "\n\nThis re-sends the disc's name (track 1's, on a CD-Text disc) with its "
+            "new userfiles attached, the same write as the Userfiles & Program tab. The disc's "
+            "names, genre and userfiles "
             "are read from the changer first, and nothing is written if the slot doesn't hold "
             "the disc from the scan.",
         ):
             return
         self._library_begin(f"Userfiles: reading slot {slot}...", self.lib_progress_label)
         threading.Thread(target=self._library_userfile_worker,
-                         args=(link, slot, scanned, number, member), daemon=True).start()
+                         args=(link, slot, scanned, number, member, scanned_disc.get("tracks")),
+                         daemon=True).start()
 
     def _library_userfile_worker(self, link: PCLinkConnection, slot: int, scanned_name: str | None,
-                                 number: int, member: bool):
+                                 number: int, member: bool, scanned_tracks: dict | None = None):
         state = self._read_slot_state_sync(link, slot)
-        mask, why_not = library_browser.userfile_change(slot, scanned_name, state, number, member)
+        mask, why_not = library_browser.userfile_change(slot, scanned_name, state, number, member,
+                                                        scanned_tracks)
         if mask is not None:
-            items, error = plan_userfile_membership_write(state["name"], state["genre"])
+            items, error = plan_userfile_membership_write(
+                state["name"], state["genre"], state["cdtext"],
+                (state["tracks"] or {}).get(1))
             why_not = error or ""
         if why_not:
             self._browser_update_slot(slot, state)

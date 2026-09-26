@@ -193,9 +193,10 @@ class TestSendEndToEnd(_LinkTestBase):
 
 class TestAppIgnoresTheStream(unittest.TestCase):
     def _fake_app(self):
-        app = types.SimpleNamespace(logged=[], cached=[])
+        app = types.SimpleNamespace(logged=[], cached=[], formats=[])
         app._log = app.logged.append
         app._cache_name = app.cached.append
+        app._note_disc_format = lambda slot, fmt: app.formats.append((slot, fmt))
         return app
 
     def _frame(self, raw: bytes):
@@ -328,12 +329,13 @@ class TestSlotReadAfterStream(unittest.TestCase):
     def _app(self):
         app = types.SimpleNamespace(
             _disc_track_count={}, _disc_name_cache={}, _track_name_cache={},
-            _genre_cache={}, _userfiles_cache={}, _text_stream_slots=set(), logged=[],
+            _genre_cache={}, _userfiles_cache={}, _text_stream_slots=set(), _cdtext_slots=set(),
+            logged=[],
             _current_slot=4, _update_name_labels=lambda: None,
             _refresh_disc_data_from_changer=lambda: None, _note_userfiles=lambda s, u: None)
         app._log = app.logged.append
         for name in ("_retrieve_sync", "_read_track_names_sync", "_read_tracks_one_by_one_sync",
-                     "_read_names_sync"):
+                     "_read_names_sync", "_note_disc_format"):
             setattr(app, name, getattr(pclink_app.App, name).__get__(app))
         return app
 

@@ -129,8 +129,10 @@ gaps" #21.
   CD-Text title; with another disc in the drive it gives the stored
   copy. **v1.12.10 (confirmed):** the app reads a streaming disc's track
   names one track at a time, getting the full CD-Text titles, on connect
-  and on Rescan. Parked: not writing names to CD-Text discs (a Backup
-  restore would now write their full titles back, cut to 25). See README "Honest gaps" #23.
+  and on Rescan. **v1.12.11 (confirmed):** no name writes to a CD-Text
+  disc; its genre and userfiles ride on a re-sent track 1 name (userfiles
+  and genre both confirmed with slot 4 in the drive, from the Disc Data,
+  Userfiles and Library tabs and Backup restore). See README "Honest gaps" #23.
 
 - **Artist name (info_type 0x02): not supported (v1.12.3, real
   hardware).** A read gets no reply, and a write's payload is refused

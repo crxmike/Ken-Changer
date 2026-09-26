@@ -195,6 +195,11 @@ class Format:
     # 0x90 is seen on real hardware (v1.12.4) on a disc whose front-panel
     # display shows CD-Text titles, and on some empty slots (v1.7.1).
     # Whether it means "CD-Text" is a guess, so it stays "Unknown (0x90)".
+    # v1.12.11: the app treats a disc (track count above 0) reporting it
+    # in DiscInfo, DiscTOC or a text reply as CD-Text. On real hardware so
+    # far, the one CD-Text disc (slot 4) reports it in all three, whether
+    # it's in the drive or not, and every other disc reports 0x00.
+    SEEN_CDTEXT = 0x90
 
 
 def format_name(value: int) -> str:

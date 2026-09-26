@@ -51,7 +51,10 @@ v1.12.4: a CD-Text disc (format `0x90`) in the drive answers name reads
 with an endless `LongTextData` stream (real hardware); the link's
 handling of it is confirmed (v1.12.6). v1.12.9: `DataAccess`'s "unknown" byte is a track number (confirmed);
 v1.12.10 uses it to read a CD-Text disc's full titles per track
-(confirmed). v1.12.7: Next Track on that disc
+(confirmed). v1.12.11: no name writes to a CD-Text disc; its genre and
+userfiles ride on a re-sent track 1 name (confirmed: a track write sets
+userfiles too).
+v1.12.7: Next Track on that disc
 sends the changer to the next disc and replaces its PC-written names
 with its CD-Text (two logged cases; trigger details open).
 
@@ -74,6 +77,8 @@ with its CD-Text (two logged cases; trigger details open).
 - `test_write_feature.py` -- tests for the in-progress write feature.
 - `test_cdtext_stream.py` -- tests for the CD-Text `LongTextData`
   stream handling (v1.12.4).
+- `test_cdtext_write_block.py` -- tests for not writing names to a
+  CD-Text disc and carrying its genre/userfiles on track 1 (v1.12.11).
 - `probe_cdtext_stream.py` -- standalone, read-only experiment: lets a
   CD-Text disc's `LongTextData` stream run (up to `--window` seconds)
   and reports how it goes on. Run on hardware in v1.12.8: an endless

@@ -913,6 +913,18 @@ exactly what's happening):
      the tracks one at a time instead, so a CD-Text disc in the drive shows
      its full CD-Text titles. A streaming disc-name read is shown as "no
      CD-Text disc title".
+   - **Since v1.12.11 the app writes no names to a CD-Text disc.** A written disc name is stored but the front
+     panel still shows "-----" (real hardware, 2026-09-26), and the
+     changer replaces written track names with its CD-Text anyway. A disc
+     counts as CD-Text when it reports format `0x90` (with tracks) or its
+     name read streams. Its genre and userfiles are written by re-sending
+     track 1's name instead of the disc name (which can't be read in the
+     drive). Both CONFIRMED on real hardware (2026-09-26, 17:07 log: slot
+     4 in the drive, userfiles 0x00 -> 0x07, then genre Soundtrack ->
+     Country, each on a track 1 write; the Library's userfile menu too).
+     Backup restore too: it put slot 4's genre back on a track 1 write,
+     wrote no names, and verified. Before this, setting userfiles on slot 4 in the
+     drive stopped at "couldn't read the disc name" (real hardware).
    - **The stream never carries text and never ends (v1.12.8, real
      hardware, `probe_cdtext_stream.py`):** let run for 60s, playing or
      stopped, it's a loop of `seq` 1-70 (70 empty frames, then ~1.75s of
