@@ -1,9 +1,12 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.12.2 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.12.12 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
-and programs + gnudb.org lookup with cover art, all confirmed working
-against real CD-425M hardware and the live gnudb.org server.** See `CHANGELOG.md` for what that covers and the
+and programs + gnudb.org lookup with cover art + Backup export/restore +
+the Library tab + CD-Text disc handling, all confirmed working
+against real CD-425M hardware and the live gnudb.org server** (except
+v1.12.12's longer queue wait, not yet seen on a long stream -- see
+"Honest gaps" #23). See `CHANGELOG.md` for what that covers and the
 history of fixes that got it there. Genre writing took four different
 approaches to get right -- it goes out folded into a `WRITE_NAME` write
 rather than the standalone `Action.SET_DISC_GENRE` action the protocol

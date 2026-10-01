@@ -156,8 +156,8 @@ gaps" #21.
 - **Backup tab: confirmed (v1.10.2).** Untried corners: restoring
   userfile names, restoring the program, a genre- or userfiles-only
   change, and a track-count-mismatch skip.
-- Nothing open on userfiles/programs. Untried corner: writing an empty
-  program (to clear it).
+- Nothing open on userfiles/programs. Writing an empty program (to clear
+  it) is confirmed (v1.12.2).
 - **gnudb.org: live round-trip CONFIRMED** (v1.8.3 session: query ->
   inexact-match picker -> read -> write to the changer). Still open:
   - Exact DiscID matches: a known limitation, not a bug (v1.8.6).
