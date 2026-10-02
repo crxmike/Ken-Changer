@@ -64,7 +64,8 @@ for its TOC, look it up, write approved matches) -- confirmed on real
 hardware (v1.13.1: 31 discs written). v1.13.1's fixes (check covers
 tracks 1-20 only, since a read returns no more; rewrite after a failed
 check; give up when the changer skips an unreadable disc) aren't
-retried yet. Whether the changer keeps track titles 21+ is open.
+retried yet. v1.13.2: the changer keeps track titles 1-20 only
+(confirmed on the front panel), so the batch doesn't write 21+.
 
 ## Files
 

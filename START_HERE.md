@@ -124,10 +124,11 @@ gaps" #21.
   tracks 1-20 only (a read returns no more; slot 32 has 26 tracks), a
   disc whose check failed can be written again, and the batch gives up
   on a disc the changer can't read as soon as the changer moves on to
-  the next slot by itself (slot 37 took the full 90s). **Open:** whether
-  the changer keeps titles 21+ at all (slot 32's 21-26 were written and
-  ACK'd; play track 21 and see if the front panel shows "MC Face On
-  Patrol"). See README "Honest gaps" #24 and `CHANGELOG.md` v1.13.1.
+  the next slot by itself (slot 37 took the full 90s; it loaded fine on
+  the next run, so this fix is still unexercised). **v1.13.2:** the
+  changer keeps titles for tracks 1-20 only (CONFIRMED: track 21 plays
+  as "DISC032 TRACK21"), so the batch no longer writes 21+. See README
+  "Honest gaps" #24 and `CHANGELOG.md` v1.13.1/v1.13.2.
   The same disc-by-disc walk is the building block for the deferred
   "ALL DATA READ" fallback.
 

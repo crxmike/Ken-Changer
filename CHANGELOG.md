@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.13.2 -- The changer keeps track titles 1-20 only; the batch stops writing 21+
+
+**CONFIRMED on real hardware:** playing slot 32 track 21 shows "DISC032
+TRACK21" on the front panel, with no title, although "MC Face On Patrol"
+was written to it and ACK'd in v1.13.1's run. With the track-names read
+also stopping at track 20, the changer evidently drops titles past 20, as
+its manual says (20 titles per disc). So the batch no longer writes them
+(`batch_tagging.TRACK_TITLES_MAX`), and the review says "The changer keeps
+titles for tracks 1-20 only: tracks 21-26 get none." The check (v1.13.1)
+never sees them now.
+
+Not changed: the Disc Data tab and a Backup restore still send titles
+21+ if given them (a backup never holds them, since a read returns none).
+The changer ACKs and drops them.
+
+**From the same session's second batch run** (slots 4, 10, 12, 37, 38):
+- **Slot 37 read fine this time** (about 15s to its TOC), was looked up
+  (Neil Young / Mirror Ball), written and checked out. So v1.13.1's
+  "changer moved on" fix is still unexercised; the disc seems to fail
+  only sometimes.
+- **The summary reads "1 CD-Text, skipped"** (v1.13.1 fix CONFIRMED).
+- **Slot 4 (CD-Text) was loaded before being skipped**: after a fresh
+  connect the app doesn't know it's CD-Text yet, and the saved scan
+  doesn't record it, so the batch learns it from the TOC (`0x90`) and
+  skips the lookup, as designed. That cost about 17s. Not changed.
+- "Writing again after a failed check" (v1.13.1) wasn't needed, so it's
+  still untried.
+
+Tests: `test_batch_tagging.py` (47), slot 32's test now expects tracks
+1-20 only.
+
 ## v1.13.1 -- Batch gnudb tagging run on real hardware; tracks 21+, a disc the changer can't read
 
 The first real batch run (39 discs; slot 4 CD-Text, slot 37 a damaged
@@ -29,7 +60,8 @@ hardware**, with the exceptions below:
   track-names read returns the disc name and tracks 1-20, nothing else,
   here and in the later rescan, which fits the manual's 20 titles per
   disc. Whether the changer kept titles 21-26 at all is unknown. The
-  check now covers tracks 1-20 only (`batch_tagging.READABLE_TRACK_TITLES`)
+  check now covers tracks 1-20 only (`batch_tagging.READABLE_TRACK_TITLES`,
+  `TRACK_TITLES_MAX` since v1.13.2)
   and the review notes that titles 21+ are written but can't be checked.
   They're still written, until it's known whether the changer keeps them.
 - **Writing a disc again after a failed check.** Approving slot 32 again

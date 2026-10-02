@@ -238,7 +238,9 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # v1.13.1 -- the batch's check covers tracks 1-20 only (all a read returns);
 # a disc whose check failed can be written again; the batch gives up on a
 # disc as soon as the changer moves on to another slot by itself.
-APP_VERSION = "1.13.1"
+# v1.13.2 -- the changer keeps track titles 1-20 only (CONFIRMED), so the
+# batch doesn't write titles past track 20.
+APP_VERSION = "1.13.2"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),

@@ -62,7 +62,8 @@ HIP = GnudbDisc(
 
 
 # Slot 32 in the first real batch run (v1.13.0): 26 tracks. All 27 writes
-# were ACK'd, but the read-back returned the disc name and tracks 1-20 only.
+# were ACK'd, but the read-back returned the disc name and tracks 1-20 only,
+# and track 21 plays with no title on the front panel (v1.13.2).
 MC_FACE = GnudbDisc(
     "data", "830ffd80", "MC Face", "Not The Tom Green Show",
     track_titles={1: "Intro", 2: "Not The Green Tom Show", 3: "My Girlfriend Died",
@@ -204,18 +205,20 @@ class TestPure(unittest.TestCase):
         self.assertEqual(bt.verify(target, dict(after, name=None)),
                          ["the slot couldn't be read back"])
 
-    def test_tracks_past_20_are_written_but_not_checked(self):
-        # The v1.13.0 run's slot 32: the read-back stops at track 20.
+    def test_tracks_past_20_get_no_title(self):
+        # The v1.13.0 run's slot 32: the changer keeps titles 1-20 only.
         target, notes = bt.plan_target(32, MC_FACE, 26)
-        self.assertEqual(sorted(target["tracks"]), list(range(1, 27)))
-        self.assertTrue(any("Titles 21-26 are written but can't be checked" in n for n in notes))
+        self.assertEqual(sorted(target["tracks"]), list(range(1, 21)))
+        self.assertIn("The changer keeps titles for tracks 1-20 only: tracks 21-26 get none.",
+                      notes)
+        self.assertFalse(any("No gnudb title" in n for n in notes))
         after = {"name": "MC Face / Not The Tom Gre", "genre": None,
                  "tracks": {n: t[:25] for n, t in MC_FACE.track_titles.items() if n <= 20}}
         self.assertEqual(bt.verify(target, after), [])
         self.assertEqual(bt.verify(target, dict(after, tracks={**after["tracks"], 20: None})),
                          ["track 20 reads None"])
         _, notes12 = _hip_target()
-        self.assertFalse(any("can't be checked" in n for n in notes12))
+        self.assertFalse(any("1-20 only" in n for n in notes12))
 
     def test_a_disc_this_batch_named_can_be_written_again(self):
         target, _ = _hip_target()
@@ -554,7 +557,7 @@ class TestWriteWorker(_BatchTestCase):
         target, _ = bt.plan_target(150, MC_FACE, 26)
         self.cut_names_at_25()
         self.write(target)
-        self.assertEqual(len(self.sim.writes), 27)  # 21-26 still written
+        self.assertEqual(len(self.sim.writes), 21)  # name + tracks 1-20
         self.assertEqual(self.bd.status, bt.WRITTEN)
 
     def test_check_failure_can_be_written_again(self):

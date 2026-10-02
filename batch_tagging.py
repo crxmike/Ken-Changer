@@ -34,11 +34,11 @@ DISC_NAME_MAX = library_backup.DISC_NAME_MAX  # 25, CONFIRMED (v1.8.5)
 # v1.12.11 logs). Track titles are written whole, as the Disc Data tab
 # does, and checked on the first 25 after the write.
 STORED_TEXT_MAX = 25
-# A track-names read returns the disc name and tracks 1-20, nothing more,
-# even for a 26-track disc whose titles 21-26 had just been written and
-# ACK'd (v1.13.0 run, slot 32; the manual's limit is 20 titles per disc).
-# Titles past 20 are still written, but the check can't see them.
-READABLE_TRACK_TITLES = 20
+# The changer keeps titles for tracks 1-20 only (the manual's limit,
+# CONFIRMED v1.13.2): slot 32's titles 21-26 were written and ACK'd, but a
+# track-names read returns tracks 1-20 only, and playing track 21 shows
+# "DISC032 TRACK21" on the front panel, no title. So 21+ aren't written.
+TRACK_TITLES_MAX = 20
 # Seconds between gnudb.org requests in a batch, so a long run doesn't get
 # the IP throttled (gnudb's policy asks clients not to hammer it; the
 # limit itself isn't published).
@@ -104,24 +104,23 @@ def plan_target(slot: int, gnudb_disc, track_count: int, fold=lambda s: s,
         notes.append(f"The disc name is cut to the {DISC_NAME_MAX} characters the changer keeps.")
 
     tracks = {}
+    titled = min(track_count, TRACK_TITLES_MAX)
     for n, title in sorted(gnudb_disc.track_titles.items()):
         title = fold((title or "").strip())
-        if title and 1 <= n <= track_count:
+        if title and 1 <= n <= titled:
             tracks[n] = title
     extra = sorted(n for n in gnudb_disc.track_titles if n > track_count)
     if extra:
         notes.append(f"gnudb has {max(gnudb_disc.track_titles)} titles but the disc has "
                      f"{track_count} tracks: titles {extra[0]}-{extra[-1]} aren't written. "
                      "Check it's the right album.")
-    missing = [n for n in range(1, track_count + 1) if n not in tracks]
+    if track_count > TRACK_TITLES_MAX:
+        notes.append(f"The changer keeps titles for tracks 1-{TRACK_TITLES_MAX} only: "
+                     f"tracks {TRACK_TITLES_MAX + 1}-{track_count} get none.")
+    missing = [n for n in range(1, titled + 1) if n not in tracks]
     if missing:
         notes.append(f"No gnudb title for {len(missing)} track(s): "
                      f"{', '.join(map(str, missing))}.")
-    unchecked = sorted(n for n in tracks if n > READABLE_TRACK_TITLES)
-    if unchecked:
-        notes.append(f"Titles {unchecked[0]}-{unchecked[-1]} are written but can't be checked: "
-                     f"the changer reads back {READABLE_TRACK_TITLES} track titles at most "
-                     f"(its manual's limit), so they may not be kept.")
     if any(len(t) > STORED_TEXT_MAX for t in tracks.values()):
         notes.append(f"Some track titles are over {STORED_TEXT_MAX} characters; the changer "
                      f"is expected to keep the first {STORED_TEXT_MAX}.")
@@ -158,16 +157,13 @@ def plan_write(target: dict, current: dict,
 
 def verify(target: dict, after: dict) -> list[str]:
     """What didn't read back as written: [] when the slot matches. Names
-    are compared on the first 25 characters (STORED_TEXT_MAX), and only
-    tracks 1-20 (READABLE_TRACK_TITLES), the ones a read returns."""
+    are compared on the first 25 characters (STORED_TEXT_MAX)."""
     if after.get("name") is None or after.get("tracks") is None:
         return ["the slot couldn't be read back"]
     problems = []
     if after["name"] != target["name"][:STORED_TEXT_MAX]:
         problems.append(f"disc name reads {after['name']!r}")
     for n, title in sorted(target["tracks"].items()):
-        if n > READABLE_TRACK_TITLES:
-            continue
         got = after["tracks"].get(n)
         if got != title[:STORED_TEXT_MAX]:
             problems.append(f"track {n} reads {got!r}")

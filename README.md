@@ -287,9 +287,11 @@ testing, so treat them as the manufacturer's claims until confirmed:
   the disc name is longer, showing the part the changer will keep. A
   real 44-character write was ACK'd and stored as its first 25.
 - **Up to 20 track titles per disc** (p. 28, for titles entered by
-  hand). A `WRITE_NAME` for tracks 21-26 is ACK'd, but a track-names
-  read returns tracks 1-20 only (v1.13.1, a 26-track disc), so whether
-  the changer keeps them is unknown. The app doesn't enforce the limit.
+  hand). **CONFIRMED (v1.13.2):** a `WRITE_NAME` for tracks 21-26 is
+  ACK'd, but a track-names read returns tracks 1-20 only, and track 21
+  plays with "DISC032 TRACK21" on the front panel, no title. Batch
+  tagging doesn't write titles past 20; the Disc Data tab and Backup
+  restore don't enforce the limit (the changer drops them).
 - **Best Selection** (p. 40): a list of up to 32 favorite tracks,
   registered while each one plays. Playing it lists "set the CD player
   to stop mode" as preparation, and so does programming (p. 24). That's
@@ -988,7 +990,9 @@ exactly what's happening):
      took about 13s and the auto-fetch always got the TOC. A disc the
      changer can't read (a damaged one) gets ~42s of "Changing", then the
      changer plays the next slot by itself; since v1.13.1 the batch gives
-     up on the disc at that point (not retried on hardware yet).
+     up on the disc at that point (not retried on hardware yet: the same
+     disc loaded fine on the next run). After a fresh connect a CD-Text
+     disc is loaded once before it's known and skipped.
    - **CD-Text discs are skipped**: known ones aren't loaded, and one
      whose TOC says `0x90` isn't looked up (#23: no name writes to them).
    - **The write** is the Backup restore's plan (#19, CONFIRMED): the
@@ -1002,10 +1006,10 @@ exactly what's happening):
    - **Track titles are written whole** (as the Disc Data tab does) and
      checked on their first 25 characters: a written track name reads
      back as its first 25 (CONFIRMED v1.13.1).
-   - **Tracks 21+**: written (the changer ACKs them), but a track-names
-     read returns tracks 1-20 only (CONFIRMED v1.13.1, a 26-track disc),
-     so they aren't checked (v1.13.1). Whether the changer keeps them
-     (e.g. shows track 21's title on the front panel) is unknown.
+   - **Tracks 21+ get no title** (v1.13.2): the changer keeps titles
+     1-20 only (CONFIRMED: ACK'd, but not read back and not shown on the
+     front panel), so the batch doesn't write them and the review says
+     so.
    - **After a failed check** the disc can be written again: the "named
      since the scan" check lets through the name the batch wrote itself
      (v1.13.1).
