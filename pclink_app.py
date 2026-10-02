@@ -41,6 +41,7 @@ import gnudb_client
 import album_art
 import library_backup
 import library_browser
+import batch_tagging
 
 
 MODE_CHANGE_TIMEOUT_MS = 5000  # how long to wait for an InfoEvent after Set Mode
@@ -231,7 +232,13 @@ REPEAT_INTERVAL = 0.3  # seconds between repeated FF/FB DoAction sends while hel
 # the disc name, which can't be read while it's in the drive.
 # v1.12.12 -- queued requests wait up to 30s (not 5s) to start, so an
 # auto-fetch queued behind a CD-Text stream read no longer gives up.
-APP_VERSION = "1.12.12"
+# v1.13.0 -- batch gnudb tagging (Library tab): load each unnamed disc with
+# ChangeDisc, read its TOC, look it up on gnudb.org, then write each match
+# the user approves (batch_tagging.py). CONFIRMED on real hardware (v1.13.1).
+# v1.13.1 -- the batch's check covers tracks 1-20 only (all a read returns);
+# a disc whose check failed can be written again; the batch gives up on a
+# disc as soon as the changer moves on to another slot by itself.
+APP_VERSION = "1.13.1"
 
 # The Library tab's last changer scan (v1.11.0), next to the app.
 LIBRARY_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -770,6 +777,11 @@ class App(tk.Tk):
     LIBRARY_COLUMN_TITLES = {"slot": "Slot", "name": "Disc Name", "genre": "Genre",
                              "userfiles": "Userfiles", "tracks": "Tracks"}
 
+    # -- Batch gnudb tagging (v1.13.0): loading each disc for its TOC ------
+    BATCH_LOAD_TIMEOUT = 90.0     # s from ChangeDisc to a complete TOC before giving up
+    BATCH_TOC_RETRY_AFTER = 5.0   # s settled on the disc without a TOC before asking ourselves
+    BATCH_POLL_INTERVAL = 0.25
+
     def __init__(self, library_cache_path: str | None = LIBRARY_CACHE_PATH):
         super().__init__()
         self.title(f"Ken Changer - CD-425M (v{APP_VERSION})")
@@ -875,6 +887,16 @@ class App(tk.Tk):
         self._browser_genres: dict[str, int] = {}     # filter label -> genre code
         self._browser_userfiles: dict[str, int] = {}  # filter label -> userfile number
         self._browser_tracks_slot: int | None = None  # the disc the track pane shows
+
+        # Batch gnudb tagging (v1.13.0), see batch_tagging.py: the discs of
+        # the last batch, the gnudb entries read for review, keyed by
+        # (category, discid), and the review window.
+        self._batch: list[batch_tagging.BatchDisc] = []
+        self._batch_entries: dict[tuple[str, str], gnudb_client.GnudbDisc] = {}
+        self._batch_hello = ""
+        self._batch_pacer = batch_tagging.Pacer()
+        self._batch_win = None
+        self._batch_loading = False
 
         # Mode code from the last "Set Mode" click, until an InfoEvent
         # reports it. Confirmed on real hardware: the changer ACKs a
@@ -1441,6 +1463,10 @@ class App(tk.Tk):
         self.lib_stop_btn = ttk.Button(toolbar, text="Stop", state="disabled",
                                        command=self._library_stop.set)
         self.lib_stop_btn.pack(side="left", padx=2)
+        # v1.13.0: look up every unnamed disc on gnudb.org (batch_tagging.py).
+        self.lib_batch_btn = ttk.Button(toolbar, text="Batch gnudb Tagging...",
+                                        command=self._start_batch_tagging)
+        self.lib_batch_btn.pack(side="left", padx=2)
         self.lib_progress_label = ttk.Label(toolbar, text="")
         self.lib_progress_label.pack(side="left", padx=12)
 
@@ -3555,7 +3581,7 @@ class App(tk.Tk):
         self._library_stop.clear()
         self._library_label = label or self.backup_progress_label
         for btn in (self.backup_export_btn, self.backup_restore_btn, self.lib_scan_btn,
-                    self.lib_rescan_btn, self.lib_userfile_btn):
+                    self.lib_rescan_btn, self.lib_userfile_btn, self.lib_batch_btn):
             btn.configure(state="disabled")
         self.backup_stop_btn.configure(state="normal")
         self.lib_stop_btn.configure(state="normal")
@@ -3573,7 +3599,8 @@ class App(tk.Tk):
 
         def done():
             self._library_running = False
-            for btn in (self.backup_export_btn, self.backup_restore_btn, self.lib_scan_btn):
+            for btn in (self.backup_export_btn, self.backup_restore_btn, self.lib_scan_btn,
+                        self.lib_batch_btn):
                 btn.configure(state="normal")
             self.backup_stop_btn.configure(state="disabled")
             self.lib_stop_btn.configure(state="disabled")
@@ -4161,6 +4188,497 @@ class App(tk.Tk):
             f"Userfiles: slot {slot} written, but the re-read didn't show it.",
             f"The write to slot {slot} went through, but reading it back gave userfiles "
             f"{seen} instead of 0x{mask:02X}. See the log.")
+
+    # ------------------------------------------------------------------
+    # Batch gnudb tagging (v1.13.0) -- see batch_tagging.py
+    # ------------------------------------------------------------------
+
+    def _start_batch_tagging(self):
+        """Library tab: look up every unnamed disc from the scan on
+        gnudb.org. A TOC can only be read for the loaded disc (CONFIRMED),
+        so each one is loaded with ChangeDisc in turn. Nothing is written
+        until the user approves a match in the review window."""
+        if self._batch and any(d.status in batch_tagging.REVIEWABLE for d in self._batch) \
+                and messagebox.askyesno(
+                    "Batch gnudb Tagging",
+                    "The last batch still has discs to review. Open it again?\n\n"
+                    "(No starts a new batch.)"):
+            self._open_batch_window()
+            return
+        link = self._library_can_start()
+        if link is None:
+            return
+        if self._browser_raw is None:
+            messagebox.showinfo("Batch gnudb Tagging",
+                                "Scan the changer first (\"Scan Changer\"): the batch works "
+                                "from the scan's list of discs with no name.")
+            return
+        slots, unread = batch_tagging.unnamed_slots(self._browser_raw)
+        if not slots:
+            messagebox.showinfo("Batch gnudb Tagging",
+                                "Every disc in the last scan has a name."
+                                + (f"\n\n{len(unread)} disc(s) whose name couldn't be read were "
+                                   f"left out: {unread}. Rescan them first." if unread else ""))
+            return
+        email = self.gnudb_email_var.get().strip()
+        if "@" not in email:
+            email = (simpledialog.askstring(
+                "Batch gnudb Tagging",
+                "gnudb.org asks for a real contact email in every request.\nYour email:",
+                parent=self) or "").strip()
+            if "@" not in email:
+                return
+            self.gnudb_email_var.set(email)
+        if not messagebox.askyesno(
+            "Batch gnudb Tagging",
+            f"{len(slots)} disc(s) in the last scan have no name: "
+            f"{', '.join(map(str, slots))}.\n\n"
+            "Each one will be loaded (it starts playing), its TOC read, and gnudb.org "
+            "asked for matches. That takes a while per disc, and Stop ends it early.\n\n"
+            "Nothing is written yet: you review each disc's match afterwards and write "
+            "only the ones you approve."
+            + (f"\n\nLeft out, since their names couldn't be read: {unread}." if unread else ""),
+        ):
+            return
+        self._batch = [batch_tagging.BatchDisc(slot) for slot in slots]
+        self._batch_entries.clear()
+        self._batch_hello = gnudb_client.build_hello(email, "KenwoodPCLinkController", APP_VERSION)
+        self._batch_loading = True
+        self._library_begin(f"Batch: loading {len(slots)} disc(s)...", self.lib_progress_label)
+        self._log(f"Batch gnudb tagging: loading {len(slots)} unnamed disc(s): {slots}")
+        self._open_batch_window()
+        threading.Thread(target=self._batch_load_worker, args=(link,), daemon=True).start()
+
+    def _batch_changed(self):
+        """Any thread: refresh the review window."""
+        self.ui_queue.put(self._batch_refresh)
+
+    def _batch_load_worker(self, link: PCLinkConnection):
+        """Background thread: load each disc, read its TOC, query gnudb."""
+        rate_limited = False
+        for n, bd in enumerate(self._batch, start=1):
+            if self._library_stop.is_set() or self.link is not link:
+                for rest in self._batch[n - 1:]:
+                    rest.status = batch_tagging.STOPPED
+                break
+            if bd.slot in self._cdtext_slots:
+                # Already known: its titles come from the disc (v1.12.11).
+                bd.status = batch_tagging.CDTEXT
+                self._batch_changed()
+                continue
+            bd.status = batch_tagging.LOADING
+            self._batch_changed()
+            self._library_progress(f"Batch: loading slot {bd.slot} ({n}/{len(self._batch)})...")
+            entry = self._batch_load_toc_sync(link, bd.slot)
+            if bd.slot in self._cdtext_slots:  # its TOC says 0x90
+                bd.status = batch_tagging.CDTEXT
+            elif entry is None:
+                bd.status = batch_tagging.NO_TOC
+                if self._library_stop.is_set():
+                    bd.note = "stopped"
+                elif self._current_slot not in (None, bd.slot):
+                    bd.note = (f"the changer went on to slot {self._current_slot} "
+                               "(couldn't it read the disc?)")
+                else:
+                    bd.note = "the disc didn't load, or its TOC never came"
+            else:
+                bd.discid = batch_tagging.toc_discid(entry)
+                bd.track_count = max(entry["tracks"])
+                if rate_limited:
+                    bd.status = batch_tagging.RATE_LIMITED
+                else:
+                    self._library_progress(
+                        f"Batch: looking up slot {bd.slot} ({n}/{len(self._batch)})...")
+                    rate_limited = self._batch_lookup_sync(bd)
+            self._batch_changed()
+        self._batch_loading = False
+        if rate_limited:
+            self._log("Batch: gnudb.org rate-limited us, so the rest weren't looked up. "
+                      "Wait a while, then use \"Look Up Again\" on them.")
+        self._library_finish("Batch: " + batch_tagging.summary(self._batch) + ".")
+        self._batch_changed()
+
+    def _batch_load_toc_sync(self, link: PCLinkConnection, slot: int) -> dict | None:
+        """Background thread: load `slot` and wait for its complete TOC.
+        The usual auto-fetch (_note_current_position / _on_disc_settled)
+        normally gets it; if the disc has settled and BATCH_TOC_RETRY_AFTER
+        passes without one, it's asked for here. None if it never comes,
+        or as soon as the changer leaves the slot for another one: a disc
+        it can't read (slot 37 in the v1.13.0 run, a damaged disc) gets
+        ~40s of "Changing", then the changer plays the next slot itself."""
+        entry = self._toc_cache.get(slot)
+        if slot == self._current_slot and batch_tagging.toc_discid(entry):
+            return entry
+        self._toc_cache.pop(slot, None)
+        before = self._current_slot
+        if not self._send_sync(link, proto.CMD_CHANGE_DISC,
+                               proto.encode_change_disc(slot, 1, begin=True),
+                               f"ChangeDisc(slot={slot}, track=1) [batch]"):
+            return None
+        start = time.monotonic()
+        settled_at = asked_at = None
+        while time.monotonic() - start < self.BATCH_LOAD_TIMEOUT:
+            if self._library_stop.is_set() or self.link is not link:
+                return None
+            now = time.monotonic()
+            if self._current_slot not in (None, slot, before):
+                self._log(f"Batch: the changer left slot {slot} for slot {self._current_slot} "
+                          f"before slot {slot}'s TOC came; it may not be able to read that disc.")
+                return None
+            if self._current_slot == slot and self._last_state != proto.State.CHANGING:
+                entry = self._toc_cache.get(slot)
+                if batch_tagging.toc_discid(entry):
+                    return entry
+                settled_at = settled_at if settled_at is not None else now
+                if now - settled_at >= self.BATCH_TOC_RETRY_AFTER and (
+                        asked_at is None or now - asked_at >= self.BATCH_TOC_RETRY_AFTER):
+                    asked_at = now
+                    self._toc_cache[slot] = {"tracks": {}, "leadout": None,
+                                             "format": None, "format_name": None}
+                    self._retrieve_sync(link, proto.DataType.DISC_TOC, slot, what="TOC")
+                    continue
+            else:
+                settled_at = None
+            time.sleep(self.BATCH_POLL_INTERVAL)
+        self._log(f"Batch: slot {slot}'s TOC didn't arrive within "
+                  f"{self.BATCH_LOAD_TIMEOUT:.0f}s.")
+        return None
+
+    def _send_sync(self, link: PCLinkConnection, command: int, data: bytes, label: str) -> bool:
+        """Background thread: one blocking send, retrying a timeout twice
+        (likely a bus collision, see _send_bg)."""
+        for attempt in range(3):
+            try:
+                link.send(command, data)
+                self._log(f"TX {label} - sent ok")
+                return True
+            except PCLinkTimeout:
+                time.sleep(0.1)
+            except PCLinkError as exc:
+                self._log(f"TX {label} - error: {exc}")
+                return False
+        self._log(f"TX {label} - timed out (gave up after 3 attempts)")
+        return False
+
+    def _batch_lookup_sync(self, bd: batch_tagging.BatchDisc) -> bool:
+        """Any non-UI thread: gnudb.org query for one disc's DiscID. True if
+        gnudb.org rate-limited us."""
+        bd.matches, bd.note = [], ""
+        self._batch_pacer.wait()
+        try:
+            matches = gnudb_client.query(bd.discid["discid"], bd.discid["track_offsets"],
+                                         bd.discid["total_seconds"], self._batch_hello)
+        except gnudb_client.GnudbRateLimited as exc:
+            bd.status = batch_tagging.RATE_LIMITED
+            self._log(f"Batch: slot {bd.slot}: gnudb.org rate-limited. {exc}")
+            return True
+        except gnudb_client.GnudbError as exc:
+            bd.status, bd.note = batch_tagging.LOOKUP_FAILED, str(exc)[:80]
+            self._log(f"Batch: slot {bd.slot}: gnudb.org query failed: {exc}")
+            return False
+        if not matches:
+            bd.status = batch_tagging.NO_MATCH
+            self._log(f"Batch: slot {bd.slot} ({bd.discid['discid']}): no gnudb match.")
+            return False
+        bd.matches = matches
+        bd.status = batch_tagging.FOUND
+        bd.note = f"{len(matches)} candidate(s)" + ("" if matches[0].exact else ", inexact")
+        self._log(f"Batch: slot {bd.slot} ({bd.discid['discid']}): "
+                  + gnudb_match_summary(matches))
+        return False
+
+    # -- The review window --------------------------------------------------
+
+    def _open_batch_window(self):
+        if self._batch_window_open():
+            self._batch_win.deiconify()
+            self._batch_win.lift()
+            self._batch_refresh()
+            return
+        win = tk.Toplevel(self)
+        win.title("Batch gnudb Tagging")
+        win.geometry("980x600")
+        self._batch_win = win
+        win.protocol("WM_DELETE_WINDOW", self._close_batch_window)
+
+        ttk.Label(
+            win, wraplength=940, justify="left",
+            text="Each unnamed disc is loaded in turn and looked up on gnudb.org. Pick a disc, "
+                 "then a candidate, and check what would be written on the right. \"Write to "
+                 "Changer\" writes it (only what differs, keeping the disc's userfiles, and "
+                 "nothing if the slot now holds a different disc); \"Skip\" leaves it. "
+                 "Close matches are often a different album or pressing.",
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+
+        panes = ttk.PanedWindow(win, orient="horizontal")
+        panes.pack(fill="both", expand=True, padx=8)
+
+        left = ttk.Frame(panes)
+        self.batch_tree = ttk.Treeview(left, columns=("slot", "discid", "status", "best"),
+                                       show="headings", selectmode="browse")
+        for col, title, width in (("slot", "Slot", 45), ("discid", "DiscID", 75),
+                                  ("status", "Status", 170), ("best", "Best candidate", 200)):
+            self.batch_tree.heading(col, text=title)
+            self.batch_tree.column(col, width=width, anchor="w", stretch=(col == "best"))
+        for bd in self._batch:
+            self.batch_tree.insert("", "end", iid=str(bd.slot), values=bd.row())
+        self.batch_tree.pack(fill="both", expand=True)
+        self.batch_tree.bind("<<TreeviewSelect>>", lambda e: self._batch_show_disc())
+        panes.add(left, weight=1)
+
+        right = ttk.Frame(panes)
+        ttk.Label(right, text="gnudb.org candidates:").pack(anchor="w")
+        self.batch_candidates = tk.Listbox(right, height=5, exportselection=False)
+        self.batch_candidates.pack(fill="x")
+        self.batch_candidates.bind("<<ListboxSelect>>", lambda e: self._batch_show_candidate())
+        self.batch_preview = ttk.Treeview(right, columns=("field", "value"), show="headings",
+                                          height=10, selectmode="none")
+        self.batch_preview.heading("field", text="")
+        self.batch_preview.heading("value", text="Would be written")
+        self.batch_preview.column("field", width=80, anchor="w", stretch=False)
+        self.batch_preview.column("value", width=330, anchor="w", stretch=True)
+        self.batch_preview.pack(fill="both", expand=True, pady=(4, 0))
+        self.batch_notes = ttk.Label(right, text="", wraplength=430, justify="left",
+                                     foreground="#a05a00")
+        self.batch_notes.pack(anchor="w", pady=(4, 0))
+        btns = ttk.Frame(right)
+        btns.pack(fill="x", pady=4)
+        self.batch_write_btn = ttk.Button(btns, text="Write to Changer", command=self._batch_write)
+        self.batch_write_btn.pack(side="left")
+        self.batch_skip_btn = ttk.Button(btns, text="Skip", command=self._batch_skip)
+        self.batch_skip_btn.pack(side="left", padx=4)
+        self.batch_lookup_btn = ttk.Button(btns, text="Look Up Again",
+                                           command=self._batch_lookup_again)
+        self.batch_lookup_btn.pack(side="left")
+        panes.add(right, weight=1)
+
+        bottom = ttk.Frame(win)
+        bottom.pack(fill="x", padx=8, pady=8)
+        self.batch_summary = ttk.Label(bottom, text="")
+        self.batch_summary.pack(side="left")
+        ttk.Button(bottom, text="Close", command=self._close_batch_window).pack(side="right")
+        self._batch_shown = None   # (slot, candidate index) the preview is for
+        self._batch_target = None  # its planned target disc (batch_tagging.plan_target)
+        self._batch_refresh()
+
+    def _close_batch_window(self):
+        if self._batch_loading:
+            if not messagebox.askyesno("Batch gnudb Tagging",
+                                       "Discs are still being loaded. Stop loading?",
+                                       parent=self._batch_win):
+                return
+            self._library_stop.set()
+        self._batch_win.destroy()
+        self._batch_win = None
+
+    def _batch_window_open(self) -> bool:
+        return self._batch_win is not None and bool(self._batch_win.winfo_exists())
+
+    def _batch_selected(self) -> batch_tagging.BatchDisc | None:
+        if not self._batch_window_open():
+            return None
+        selected = self.batch_tree.selection()
+        if not selected:
+            return None
+        return next((d for d in self._batch if d.slot == int(selected[0])), None)
+
+    def _batch_refresh(self):
+        """UI thread: update every row, the summary and the buttons."""
+        if not self._batch_window_open():
+            return
+        for bd in self._batch:
+            if self.batch_tree.exists(str(bd.slot)):
+                self.batch_tree.item(str(bd.slot), values=bd.row())
+        self.batch_summary.configure(
+            text=("Loading discs... " if self._batch_loading else "")
+            + batch_tagging.summary(self._batch))
+        if not self.batch_tree.selection():
+            first = next((d for d in self._batch if d.status == batch_tagging.FOUND), None)
+            if first is not None:
+                self._batch_select(first)
+        bd = self._batch_selected()
+        if bd is not None and self._batch_shown is not None and self._batch_shown[0] == bd.slot \
+                and self.batch_candidates.size() != len(bd.matches):
+            self._batch_show_disc()  # new candidates from Look Up Again
+        self._batch_update_buttons()
+
+    def _batch_select(self, bd: batch_tagging.BatchDisc):
+        self.batch_tree.selection_set(str(bd.slot))
+        self.batch_tree.see(str(bd.slot))
+        self._batch_show_disc()  # don't wait for <<TreeviewSelect>>
+
+    def _batch_update_buttons(self):
+        bd = self._batch_selected()
+        can_write = (bd is not None and not self._library_running
+                     and bd.status in batch_tagging.REVIEWABLE
+                     and self._batch_target is not None and self._batch_target["slot"] == bd.slot)
+        self.batch_write_btn.configure(state="normal" if can_write else "disabled")
+        self.batch_skip_btn.configure(
+            state="normal" if bd is not None and bd.status == batch_tagging.FOUND else "disabled")
+        self.batch_lookup_btn.configure(
+            state="normal" if bd is not None and bd.discid and bd.status not in
+            (batch_tagging.WRITING, batch_tagging.LOADING) else "disabled")
+
+    def _batch_show_disc(self):
+        """UI thread: list the selected disc's candidates and preview the first."""
+        bd = self._batch_selected()
+        self.batch_candidates.delete(0, "end")
+        self._batch_show_preview(None, [])
+        self._batch_shown = None
+        if bd is None:
+            self._batch_update_buttons()
+            return
+        for m in bd.matches:
+            self.batch_candidates.insert("end", f"[{m.category} {m.discid}"
+                                                f"{'' if m.exact else ', inexact'}] {m.title}")
+        if bd.matches:
+            self.batch_candidates.selection_set(0)
+            self._batch_show_candidate()
+        else:
+            self._batch_shown = (bd.slot, None)
+            self.batch_notes.configure(text=bd.note or bd.status)
+        self._batch_update_buttons()
+
+    def _batch_show_candidate(self):
+        """UI thread: preview the selected candidate, reading its gnudb
+        entry first if it hasn't been read yet."""
+        bd = self._batch_selected()
+        picked = self.batch_candidates.curselection()
+        if bd is None or not picked:
+            return
+        match = bd.matches[picked[0]]
+        self._batch_shown = (bd.slot, picked[0])
+        entry = self._batch_entries.get((match.category, match.discid))
+        if entry is None:
+            self._batch_show_preview(None, [f"Reading {match.title} from gnudb.org..."])
+            threading.Thread(target=self._batch_read_worker, args=(bd.slot, picked[0], match),
+                             daemon=True).start()
+            self._batch_update_buttons()
+            return
+        target, notes = batch_tagging.plan_target(bd.slot, entry, bd.track_count, ascii_fold,
+                                                  match_changer_genre)
+        if not match.exact:
+            notes.insert(0, "A close match, not an exact one: check it's the right album.")
+        self._batch_show_preview(target, notes)
+        self._batch_update_buttons()
+
+    def _batch_read_worker(self, slot: int, index: int, match):
+        """Background thread: `cddb read` one candidate for the preview."""
+        self._batch_pacer.wait()
+        try:
+            entry = gnudb_client.read(match.category, match.discid, self._batch_hello)
+        except gnudb_client.GnudbError as exc:
+            self._log(f"Batch: gnudb.org read of {match.title} failed: {exc}")
+
+            def failed():
+                if self._batch_window_open() and self._batch_shown == (slot, index):
+                    self._batch_show_preview(None, [f"Couldn't read it from gnudb.org: {exc}"])
+                    self._batch_update_buttons()
+            self.ui_queue.put(failed)
+            return
+        self._batch_entries[(match.category, match.discid)] = entry
+        self._log(f"Batch: read [{match.category} {match.discid}] '{entry.artist} / "
+                  f"{entry.album}' ({len(entry.track_titles)} track name(s))")
+
+        def show():
+            if self._batch_window_open() and self._batch_shown == (slot, index):
+                self._batch_show_candidate()
+        self.ui_queue.put(show)
+
+    def _batch_show_preview(self, target: dict | None, notes: list[str]):
+        self._batch_target = target
+        self.batch_preview.delete(*self.batch_preview.get_children())
+        if target is not None:
+            scanned = next((d for d in (self._browser_raw or {}).get("discs", [])
+                            if d["slot"] == target["slot"]), {})
+            current = proto.GENRE_NAME_TO_CODE.get(scanned.get("genre"))
+            for row in batch_tagging.preview_rows(target, current):
+                self.batch_preview.insert("", "end", values=row)
+        self.batch_notes.configure(text="\n".join(notes))
+
+    def _batch_next(self, after: batch_tagging.BatchDisc):
+        """UI thread: select the next disc still to review."""
+        later = self._batch[self._batch.index(after) + 1:] + self._batch
+        nxt = next((d for d in later if d.status == batch_tagging.FOUND and d is not after), None)
+        if nxt is not None:
+            self._batch_select(nxt)
+
+    def _batch_skip(self):
+        bd = self._batch_selected()
+        if bd is None:
+            return
+        bd.status, bd.note = batch_tagging.SKIPPED, ""
+        self._log(f"Batch: slot {bd.slot} skipped.")
+        self._batch_refresh()
+        self._batch_next(bd)
+
+    def _batch_lookup_again(self):
+        bd = self._batch_selected()
+        if bd is None or not bd.discid:
+            return
+        bd.status, bd.note = batch_tagging.LOADING, "looking up"
+        self._batch_refresh()
+
+        def work():
+            self._batch_lookup_sync(bd)
+            self._batch_changed()
+        threading.Thread(target=work, daemon=True).start()
+
+    def _batch_write(self):
+        """UI thread: write the previewed match -- the user's approval."""
+        bd, target = self._batch_selected(), self._batch_target
+        if bd is None or target is None or target["slot"] != bd.slot:
+            return
+        link = self._library_can_start()
+        if link is None:
+            return
+        bd.status, bd.note = batch_tagging.WRITING, ""
+        self._library_begin(f"Batch: writing slot {bd.slot}...", self.lib_progress_label)
+        self._log(f"Batch: approved for slot {bd.slot}: {target['name']!r}, "
+                  f"{len(target['tracks'])} track name(s)")
+        self._batch_refresh()
+        threading.Thread(target=self._batch_write_worker, args=(link, bd, target),
+                         daemon=True).start()
+
+    def _batch_write_worker(self, link: PCLinkConnection, bd: batch_tagging.BatchDisc,
+                            target: dict):
+        """Background thread: read the slot fresh, write what differs (the
+        Backup restore's plan, batch_tagging.plan_write), then read it back
+        and check."""
+        slot = bd.slot
+        current = self._read_slot_state_sync(link, slot)
+        items, mask, why_not = batch_tagging.plan_write(target, current, bd.written_name)
+        if why_not:
+            bd.status, bd.note = batch_tagging.NOT_WRITTEN, why_not
+            self._browser_update_slot(slot, current)
+            self._batch_write_done(bd, f"Batch: slot {slot} not written: {why_not}.")
+            return
+        self._log(f"Batch: writing {len(items)} value(s) to slot {slot} "
+                  f"(keeping userfiles=0x{mask:02X})...")
+        failed = sum(not self._send_text_write(link, slot, item, mask, "Batch") for item in items)
+        bd.written_name = target["name"][:batch_tagging.STORED_TEXT_MAX]
+        after = self._read_slot_state_sync(link, slot)
+        self._browser_update_slot(slot, after)
+        problems = batch_tagging.verify(target, after)
+        if failed:
+            bd.status = batch_tagging.CHECK_FAILED
+            bd.note = f"{failed} of {len(items)} write(s) failed"
+        elif problems:
+            bd.status, bd.note = batch_tagging.CHECK_FAILED, "; ".join(problems)[:120]
+        else:
+            bd.status, bd.note = batch_tagging.WRITTEN, ""
+        self._batch_write_done(bd, f"Batch: slot {slot}: {batch_tagging.lower_first(bd.status)}"
+                                   + (f" ({bd.note})." if bd.note else "."))
+
+    def _batch_write_done(self, bd: batch_tagging.BatchDisc, text: str):
+        """Background thread: end a write and move on to the next disc."""
+        self._library_finish(text)
+
+        def done():
+            self._batch_refresh()
+            if self._batch_window_open() and bd.status == batch_tagging.WRITTEN:
+                self._batch_next(bd)
+        self.ui_queue.put(done)
 
     def _reset_disc_map(self):
         """Changer-sourced state, so cleared on disconnect like the other

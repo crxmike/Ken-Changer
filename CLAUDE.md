@@ -59,6 +59,12 @@ hardware, but behind a short stream; the ~12s case is unexercised).
 v1.12.7: Next Track on that disc
 sends the changer to the next disc and replaces its PC-written names
 with its CD-Text (two logged cases; trigger details open).
+v1.13.0: batch gnudb tagging on the Library tab (load each unnamed disc
+for its TOC, look it up, write approved matches) -- confirmed on real
+hardware (v1.13.1: 31 discs written). v1.13.1's fixes (check covers
+tracks 1-20 only, since a read returns no more; rewrite after a failed
+check; give up when the changer skips an unreadable disc) aren't
+retried yet. Whether the changer keeps track titles 21+ is open.
 
 ## Files
 
@@ -73,6 +79,9 @@ with its CD-Text (two logged cases; trigger details open).
   planning (v1.10.0).
 - `library_browser.py` -- Library tab: search, filters, sorting and the
   last-scan cache, `library_cache.json` (v1.11.0).
+- `batch_tagging.py` -- batch gnudb tagging's pure half (v1.13.0):
+  which discs, DiscIDs, gnudb entry -> write target, write checks,
+  read-back check, request pacing. Tests: `test_batch_tagging.py`.
 - `probe_artist_name.py` -- standalone experiment for the artist-name
   text type (info_type 0x02). Run on real hardware in v1.12.3: not
   supported. Tests: `test_probe_artist_name.py`.

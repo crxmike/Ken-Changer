@@ -110,6 +110,27 @@ gaps" #21.
 
 ## In progress / next up
 
+- **Batch gnudb tagging (v1.13.0): CONFIRMED on real hardware
+  (v1.13.1).** The Library tab's "Batch gnudb Tagging..." loads each
+  disc the last scan shows with no name (`ChangeDisc`, track 1; it
+  starts playing), waits for its TOC (only readable for the loaded
+  disc), and queries gnudb.org (2s apart). A review window shows each
+  disc's candidates and exactly what would be written; "Write to
+  Changer" is the approval, and writes through the Backup restore's
+  confirmed plan after a fresh read of the slot, then reads it back.
+  First real run: 34 discs loaded (~13s each, TOC every time), 31
+  written, 30 checked out; a written track name reads back as its first
+  25. **v1.13.1 fixes, not yet retried on hardware:** the check covers
+  tracks 1-20 only (a read returns no more; slot 32 has 26 tracks), a
+  disc whose check failed can be written again, and the batch gives up
+  on a disc the changer can't read as soon as the changer moves on to
+  the next slot by itself (slot 37 took the full 90s). **Open:** whether
+  the changer keeps titles 21+ at all (slot 32's 21-26 were written and
+  ACK'd; play track 21 and see if the front panel shows "MC Face On
+  Patrol"). See README "Honest gaps" #24 and `CHANGELOG.md` v1.13.1.
+  The same disc-by-disc walk is the building block for the deferred
+  "ALL DATA READ" fallback.
+
 - **A CD-Text disc in the drive answers name reads with an endless
   `LongTextData` stream (v1.12.4, real hardware).** Slot 4, format
   `0x90`; its front panel shows the disc's own CD-Text. Read with another
@@ -149,9 +170,8 @@ gaps" #21.
   (v1.12.1).**
 
 - **Library tab: confirmed (v1.11.1).** Possible follow-ups: have
-  it follow writes made on other tabs (it needs "Rescan Disc" today),
-  and batch gnudb tagging, which the v1.10.0 entry mentions alongside
-  it.
+  it follow writes made on other tabs (it needs "Rescan Disc" today).
+  Batch gnudb tagging is built (v1.13.0, above).
 
 - **Backup tab: confirmed (v1.10.2).** Untried corners: restoring
   userfile names, restoring the program, a genre- or userfiles-only
@@ -196,6 +216,11 @@ gaps" #21.
   (v1.10.0).
 - `library_browser.py` -- Library tab search, filters, sorting and the
   scan cache (v1.11.0).
+- `batch_tagging.py` -- batch gnudb tagging's pure half (v1.13.0).
+- `test_batch_tagging.py` -- tests for batch gnudb tagging, against a
+  simulated changer that answers a TOC read only for the loaded disc
+  (real TOC frames), gnudb mocked; confirmed on real hardware (v1.13.1),
+  that run's fixes not yet retried.
 - `test_library_browser.py` -- tests for the Library tab, against the
   Backup tests' simulated changer plus the user's real disc data and
   frames from the first real run; confirmed on real hardware (v1.11.1).

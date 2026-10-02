@@ -1,5 +1,112 @@
 # Changelog
 
+## v1.13.1 -- Batch gnudb tagging run on real hardware; tracks 21+, a disc the changer can't read
+
+The first real batch run (39 discs; slot 4 CD-Text, slot 37 a damaged
+disc the changer can't read). **Batch tagging is CONFIRMED on real
+hardware**, with the exceptions below:
+- **Loading:** 34 discs loaded and gave a complete TOC, about 13s from
+  `ChangeDisc` to the TOC each. The usual auto-fetch got every one; the
+  batch's own 5s retry was never needed. The known CD-Text disc (slot 4)
+  was skipped without loading.
+- **Lookups:** all 34 got candidates. With the 2s pacing there was no
+  rate limit at any point in the run.
+- **Writes:** 31 approved discs written, every name ACK'd; 30 read back
+  matching (names, genre where gnudb's matched, userfiles kept). The
+  user skipped 3. A Library rescan afterwards showed the new names.
+- **A written track name longer than 25 reads back as its first 25**
+  (CONFIRMED: "Nothing Left to Make Me Want to Stay" -> "Nothing Left
+  to Make Me W", slot 9), the same as a disc name. Writing them whole
+  stays harmless.
+- **gnudb "exact" matches turned up** for the first time (slots 11 and
+  38), but under IDs that differ from ours in the last byte (`7d0a410b`
+  -> `7d0a419c`, `02083201` -> `02083080`), which fits v1.9.2's
+  explanation (non-standard IDs in gnudb), not a wrong DiscID.
+
+**Fixed (from this run, not yet retried on hardware):**
+- **Tracks 21+ (slot 32, 26 tracks).** All 27 writes were ACK'd, but the
+  read-back said "check failed (track 21 reads None ... track 26)". A
+  track-names read returns the disc name and tracks 1-20, nothing else,
+  here and in the later rescan, which fits the manual's 20 titles per
+  disc. Whether the changer kept titles 21-26 at all is unknown. The
+  check now covers tracks 1-20 only (`batch_tagging.READABLE_TRACK_TITLES`)
+  and the review notes that titles 21+ are written but can't be checked.
+  They're still written, until it's known whether the changer keeps them.
+- **Writing a disc again after a failed check.** Approving slot 32 again
+  got "not written: it has been named since the scan", by the batch's
+  own write. `plan_write` now allows a name the batch itself wrote
+  (`BatchDisc.written_name`), and writes only what differs.
+- **A disc the changer can't read (slot 37).** The changer stayed in
+  "Changing" for about 42s, then played slot 38 by itself (InfoEvent for
+  38, then its TOC). The batch kept waiting for slot 37's TOC until its
+  90s limit, then used the TOC already in hand for slot 38 (correctly).
+  It now gives up as soon as the changer reports a slot that's neither
+  the one being loaded nor the one it came from, with "the changer went
+  on to slot 38" as the reason.
+- **The summary said "1 cD-Text, skipped"** (lower-casing the first
+  letter). Fixed (`batch_tagging.lower_first`).
+
+Tests: `test_batch_tagging.py` (47; +5): slot 32's real titles against a
+simulated changer whose read stops at track 20 (as the real one does),
+writing again after a failed check, the changer moving on from a disc it
+can't read, and the summary.
+
+## v1.13.0 -- Batch gnudb tagging (CONFIRMED on real hardware in v1.13.1)
+
+A "Batch gnudb Tagging..." button on the Library tab looks up every
+unnamed disc on gnudb.org and writes the matches the user approves, one
+disc at a time. New module `batch_tagging.py` (the pure half); the app
+does the loading, lookups and writes.
+
+**Why it loads every disc.** The changer only gives a TOC (so a DiscID)
+for the disc in the drive (CONFIRMED, README "Honest gaps" #4). So the
+batch sends `ChangeDisc(slot, track 1)` for each disc (the same request
+the Library's Play sends, CONFIRMED v1.11.1; the disc starts playing),
+waits for the usual TOC auto-fetch, and if the disc has settled (not
+`Changing`) for 5s with no complete TOC, asks for it itself, every 5s,
+for up to 90s. This disc-by-disc walk is also what the deferred "ALL
+DATA READ" fallback would need (`_batch_load_toc_sync`).
+
+**Which discs.** Those the Library's last scan shows with no name (`""`).
+Discs whose name couldn't be read (`null`) are left out and listed. A
+disc already known to be CD-Text isn't loaded; one found to be CD-Text
+by its TOC (format `0x90`) isn't looked up. Its titles come from the disc
+(v1.12.11).
+
+**Lookups.** One `cddb query` per disc, at least 2s apart
+(`batch_tagging.Pacer`; gnudb doesn't publish its limit). A rate-limit
+reply stops the lookups but not the loading, so every disc still gets its
+DiscID, and "Look Up Again" can retry later. Entries (`cddb read`) are
+only fetched in the review, for the candidate being looked at.
+
+**Review and write.** A review window lists each disc's status and
+candidates. Picking one shows exactly what would be written: "Artist /
+Album" folded to ASCII and cut to 25 (as the changer does, CONFIRMED
+v1.8.5), each track title folded, and the genre if gnudb's matches one of
+the changer's (`match_changer_genre`), else the disc's current genre is
+kept. Notes flag a close (inexact) match, extra or missing titles, and a
+cut name. "Write to Changer" is the approval. The write:
+- reads the slot fresh first, and writes nothing if the disc has been
+  named since the scan, is CD-Text, or its track count no longer matches
+  the TOC's (probably a different disc);
+- plans the write with the Backup restore's `plan_disc_restore`
+  (CONFIRMED v1.10.2): only what differs, every write carrying the genre
+  and the disc's current userfiles, nothing if those can't be read;
+- reads the slot back and checks it, comparing names on their first 25
+  characters (stored names read back as 25 at most). Track titles are
+  written whole, as the Disc Data tab does; whether the changer cuts a
+  written track name at 25 isn't known yet.
+- updates the Library's saved scan.
+
+**Untested on hardware:** the whole walk (how long a disc change takes,
+whether the auto-fetch gets the TOC every time, how the changer behaves
+being sent from disc to disc), the pacing against gnudb, and the writes
+from this window (though they use the confirmed restore path).
+
+Tests: `test_batch_tagging.py` (42), against a simulated changer that
+answers a TOC read only for the disc in the drive, using the real TOC
+frames from the v1.8.3 and v1.9.1 logs, with gnudb.org mocked.
+
 ## v1.12.12 -- Reads queued behind a CD-Text stream no longer give up
 
 Seen on the real CD-425M (2026-09-26, 17:22 raw-byte log, connecting

@@ -1,6 +1,6 @@
 # Ken Changer (Kenwood CD-425M Control App)
 
-**Status: v1.12.12 -- read/control + TOC/DiscID + Disc Map + writing
+**Status: v1.13.0 -- read/control + TOC/DiscID + Disc Map + writing
 disc/track names + reading/writing genre + reading/writing userfiles
 and programs + gnudb.org lookup with cover art + Backup export/restore +
 the Library tab + CD-Text disc handling, all confirmed working
@@ -25,6 +25,8 @@ v1.11.0 adds a Library tab (browse, search and play every disc),
 **confirmed on real hardware in v1.11.1** (see "Honest gaps" #20).
 v1.12.0 lets the Library tab add a disc to a userfile (or take it out),
 **confirmed on real hardware in v1.12.1** (see "Honest gaps" #21).
+v1.13.0 adds batch gnudb tagging on the Library tab, **not yet tried on
+real hardware** (see "Honest gaps" #24).
 
 A small desktop app for controlling a Kenwood CD-425M CD changer (also
 compatible with the CD-4700M / CD-4260M, which use the same command set)
@@ -183,7 +185,12 @@ python pclink_app.py
   gaps" #21):** the "Userfiles" menu, or a right-click on a disc, adds the
   disc to a userfile or takes it out. The Userfiles & Program tab also
   shows the saved scan's discs (marked "*") until the changer reports
-  them this session.
+  them this session. **v1.13.0 (not yet tried on real hardware, "Honest
+  gaps" #24):** "Batch gnudb Tagging..." loads each disc the scan shows
+  with no name, reads its TOC, and looks it up on gnudb.org. A review
+  window then shows each disc's candidates and exactly what would be
+  written; "Write to Changer" writes the one you approve (only what
+  differs, keeping the disc's userfiles, after re-reading the slot).
 - **Log console** with a "show raw bytes" toggle, so you can see the actual
   ENQ/ACK/STX/EOT byte exchange -- useful both for troubleshooting your
   specific unit and for extending the app later.
@@ -248,6 +255,10 @@ worth knowing:
   else is written as `?`. "Copy gnudb -> Custom" converts gnudb text to
   the nearest ASCII first (curly quotes -> `'`/`"`, dashes -> `-`, accents
   dropped, v1.8.4). **Confirmed on real hardware (v1.8.5).**
+- **Batch lookups (v1.13.0)**: the Library tab's "Batch gnudb Tagging..."
+  sends one query per unnamed disc, at least 2s apart, and reads an entry
+  only when you look at it in the review. A rate-limit reply stops the
+  lookups (the discs keep loading); "Look Up Again" retries one later.
 - **Tests**: `test_gnudb_client.py`, with the network mocked, plus frames
   from the first live session. **Live round-trip confirmed (v1.8.3
   session).**
@@ -276,8 +287,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
   the disc name is longer, showing the part the changer will keep. A
   real 44-character write was ACK'd and stored as its first 25.
 - **Up to 20 track titles per disc** (p. 28, for titles entered by
-  hand). It isn't known yet whether a `WRITE_NAME` for track 21+ is
-  rejected, ignored or accepted. The app doesn't enforce this either.
+  hand). A `WRITE_NAME` for tracks 21-26 is ACK'd, but a track-names
+  read returns tracks 1-20 only (v1.13.1, a 26-track disc), so whether
+  the changer keeps them is unknown. The app doesn't enforce the limit.
 - **Best Selection** (p. 40): a list of up to 32 favorite tracks,
   registered while each one plays. Playing it lists "set the CD player
   to stop mode" as preparation, and so does programming (p. 24). That's
@@ -330,7 +342,9 @@ testing, so treat them as the manufacturer's claims until confirmed:
   remote, the fallback idea (not yet built, deliberately deferred for now)
   would be to physically step through all 200 slots one at a time via
   `ChangeDisc`, pausing for the changer to read each one, as a workaround
-  that forces the same recataloging without needing the menu.
+  that forces the same recataloging without needing the menu. v1.13.0's
+  batch gnudb tagging already does that walk for the unnamed discs
+  (`_batch_load_toc_sync`), so it's the building block for this.
 
 ## Files
 
@@ -360,6 +374,10 @@ testing, so treat them as the manufacturer's claims until confirmed:
 - `library_browser.py` -- the Library tab's search, filters, sorting and
   scan cache (no serial or Tkinter dependency; tested in
   `test_library_browser.py`).
+- `batch_tagging.py` -- batch gnudb tagging (v1.13.0): which discs,
+  DiscIDs, what a gnudb entry becomes on the changer, the write's checks
+  and the read-back check (no serial or Tkinter dependency; tested in
+  `test_batch_tagging.py`).
 - `test_cdtext_stream.py` -- the endless `LongTextData` stream from a
   CD-Text disc in the drive, and what the link and app do about it
   (v1.12.4; see "Honest gaps" #23).
@@ -821,8 +839,9 @@ exactly what's happening):
      different discs with the same number of tracks would pass it, and it
      does nothing when either count is unknown (see above).
    - **Tracks 21+** (the manual's 20-title limit, see "Owner's manual
-     notes") are backed up if the changer returns them, and restore
-     writes them. It's still unknown what the changer does with those.
+     notes"): a track-names read returns tracks 1-20 only (v1.13.1, a
+     26-track disc), so a backup never holds them. A hand-edited backup
+     with titles 21+ would be written, and its check would report them.
 20. **Library tab -- CONFIRMED on real hardware (v1.11.1).** It sends
    nothing new: the scan is the export's slot walk (#19) plus the
    userfile-name read (#16), and Play is `ChangeDisc`. In the first real
@@ -952,6 +971,47 @@ exactly what's happening):
      for CD-Text discs (see "Owner's manual notes"). Unknown too: whether the stream ever
      ends by itself, and what `0x90` means (empty slots 100-102 report it
      as well).
+
+24. **Batch gnudb tagging -- CONFIRMED on real hardware (v1.13.1)**: 34
+   discs loaded and looked up, 31 written, 30 checked out (the 31st is
+   the tracks 21+ case below). v1.13.1's fixes aren't retried yet.
+   The Library tab's "Batch gnudb Tagging..." takes the discs the last
+   scan shows with no name (a `null` name, couldn't read, is left out),
+   and for each one sends `ChangeDisc(slot, track 1)` (the Library's
+   CONFIRMED Play; the disc starts playing), waits for its TOC, and
+   queries gnudb.org. Nothing is written until you approve a match in
+   the review window. What it relies on:
+   - **The TOC only for the loaded disc** (CONFIRMED, #4), so every disc
+     is physically loaded. The usual auto-fetch normally gets the TOC;
+     if the disc has settled with none for 5s, the batch asks itself,
+     every 5s, giving up after 90s ("No TOC"). In the real run each load
+     took about 13s and the auto-fetch always got the TOC. A disc the
+     changer can't read (a damaged one) gets ~42s of "Changing", then the
+     changer plays the next slot by itself; since v1.13.1 the batch gives
+     up on the disc at that point (not retried on hardware yet).
+   - **CD-Text discs are skipped**: known ones aren't loaded, and one
+     whose TOC says `0x90` isn't looked up (#23: no name writes to them).
+   - **The write** is the Backup restore's plan (#19, CONFIRMED): the
+     slot is read fresh, only what differs is written, every write
+     carries the genre and the disc's current userfiles. Nothing is
+     written if the disc was named since the scan, its track count no
+     longer matches the TOC, or its genre/userfiles can't be read (when
+     they'd be kept). Afterwards the slot is read back and checked.
+   - **Genre**: gnudb's is used when it spells one of the changer's
+     (`match_changer_genre`, v1.8.7), otherwise the current one is kept.
+   - **Track titles are written whole** (as the Disc Data tab does) and
+     checked on their first 25 characters: a written track name reads
+     back as its first 25 (CONFIRMED v1.13.1).
+   - **Tracks 21+**: written (the changer ACKs them), but a track-names
+     read returns tracks 1-20 only (CONFIRMED v1.13.1, a 26-track disc),
+     so they aren't checked (v1.13.1). Whether the changer keeps them
+     (e.g. shows track 21's title on the front panel) is unknown.
+   - **After a failed check** the disc can be written again: the "named
+     since the scan" check lets through the name the batch wrote itself
+     (v1.13.1).
+   - **gnudb pacing**: queries at least 2s apart; a rate-limit reply
+     stops the lookups (not the loading) and "Look Up Again" retries.
+     gnudb's real limit isn't published.
 
 If your real unit's behavior differs from any of the above, turn on "show
 raw bytes" in the log and it'll show you exactly what's being exchanged.
